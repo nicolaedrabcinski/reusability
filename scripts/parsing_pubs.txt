@@ -1,0 +1,106 @@
+import ftplib
+import os
+import re
+import shutil
+import subprocess
+import tarfile
+import time
+
+from tqdm import tqdm
+
+# Define paths
+extract_root_dir = '/home/nicolaedrabcinski/research/lab/new_reuse/data/publications_unzippped'
+interim_pr_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/raw_pub_data'
+interim_jn_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/journal_names'
+interim_acc_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/accessions'
+interim_pfm_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/pre_filter_matrices'
+
+# Functions
+def search_journal_xml(directory_path):
+    """Search for journal names in XML files."""
+    regex_pattern = r'<journal-meta>.*?<journal-id journal-id-type="nlm-ta">(.*?)</journal-id>'
+    matches = []
+
+    for root, dirs, files in os.walk(directory_path):
+        for file_name in files:
+            if file_name.endswith('.xml'):
+                file_path = os.path.join(root, file_name)
+                with open(file_path, 'r') as file:
+                    content = file.read()
+                    matches.extend(re.findall(regex_pattern, content))
+
+    matches = [match.replace(',', ' ') for match in matches]
+    return matches
+
+def generate_tmp_file_paths(file_path):
+    """Generate temporary file paths based on the provided file path."""
+    base_file_name = os.path.basename(file_path)
+    tmp_raw_pub_data = os.path.join(interim_pr_data, base_file_name + "_raw_pub_data.txt")
+    tmp_journal_names = os.path.join(interim_jn_data, base_file_name + "_journal_names.txt")
+    tmp_pre_filter_matrix = os.path.join(interim_pfm_data, base_file_name + "_pre_filter_matrix.csv")
+
+    return tmp_raw_pub_data, tmp_journal_names, tmp_pre_filter_matrix
+
+
+def extract_accession_numbers(file_path, tmp_raw_pub_data):
+    """Extract accession numbers from files and save to a temporary file."""
+    grep_command = (
+        f"grep -o -r -E -H "
+        f"-e '[SDE]R[APXRSZ][0-9]{{6,7}}' "
+        f"-e 'PRJNA[0-9]{{6,7}}' "
+        f"-e 'PRJD[0-9]{{6,7}}' "
+        f"-e 'PRJEB[0-9]{{6,7}}' "
+        f"-e 'GDS[0-9]{{1,6}}' "
+        f"-e 'GSE[0-9]{{1,6}}' "
+        f"-e 'GPL[0-9]{{1,6}}' "
+        f"-e 'GSM[0-9]{{1,6}}' "
+        f"{file_path}"
+    )
+    os.system(f"{grep_command} > {tmp_raw_pub_data}")
+
+
+def format_raw_data(tmp_raw_pub_data):
+    """Format raw data into CSV format."""
+    with open(tmp_raw_pub_data, 'r') as file:
+        raw_data = file.readlines()
+    pmc_accs_data = [
+        line.strip().split("/")[-1].replace('.xml', '').rpartition(":")[0] + "," +
+        line.strip().split("/")[-1].replace('.xml', '').rpartition(":")[2]
+        for line in raw_data
+    ]
+    with open(os.path.join(interim_acc_data, os.path.basename(tmp_raw_pub_data) + "_accessions.csv"), 'w') as file:
+        file.write("pmc_id,accession\n")
+        file.write("\n".join(pmc_accs_data))
+
+
+def combine_journal_and_accession(tmp_journal_names, tmp_pre_filter_matrix, tmp_raw_pub_data):
+    """Combine journal names and accession numbers into a single CSV file."""
+    with open(tmp_pre_filter_matrix, 'w') as file:
+        file.write('journal_name,pmc_id,accession\n')
+        with open(tmp_journal_names, 'r') as journal_file:
+            journal_names = journal_file.readlines()[1:]
+        with open(os.path.join(interim_acc_data, os.path.basename(tmp_raw_pub_data) + "_accessions.csv"), 'r') as pmc_file:
+            pmc_accs = pmc_file.readlines()[1:]
+        for journal, pmc_acc in zip(journal_names, pmc_accs):
+            file.write(journal.strip() + "," + pmc_acc)
+
+
+def process_file(file_path):
+    """Process a single file: extract accession numbers and combine with journal names."""
+    tmp_raw_pub_data, tmp_journal_names, tmp_pre_filter_matrix = generate_tmp_file_paths(file_path)
+    extract_accession_numbers(file_path, tmp_raw_pub_data)
+    journal_names = search_journal_xml(file_path)
+    with open(tmp_journal_names, 'w') as file:
+        file.write("journal_name\n")
+        file.write("\n".join(journal_names))
+    format_raw_data(tmp_raw_pub_data)
+    combine_journal_and_accession(tmp_journal_names, tmp_pre_filter_matrix, tmp_raw_pub_data)
+
+
+# Process all extracted directories
+def process_all_extracted_directories(root_dir):
+    for subdir, _, _ in tqdm(os.walk(root_dir), desc='Processing directories'):
+        process_file(subdir)
+
+# Run the processing
+process_all_extracted_directories(extract_root_dir)
