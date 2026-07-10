@@ -1,26 +1,23 @@
 import os
+import glob
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 
-# Define the folder containing the CSV files and the output file path
-input_folder = '/home/nicolaedrabcinski/research/lab/new_reuse/data/pre_filter_matrices/'
-output_file = '/home/nicolaedrabcinski/research/lab/new_reuse/data/pre_filter_matrix.csv'
+DATA_DIR = '../data'
 
-# Get a list of all CSV files in the input folder
-csv_files = [f for f in os.listdir(input_folder) if f.endswith('.csv')]
+input_folder = f'{DATA_DIR}/pre_filter_matrices/'
+output_file = f'{DATA_DIR}/pre_filter_matrix.csv'
 
-# Initialize an empty list to store DataFrames
-dfs = []
+csv_files = glob.glob(os.path.join(input_folder, '*.csv'))
 
-# Loop through the list of CSV files and read each one into a DataFrame
-for file in csv_files:
-    file_path = os.path.join(input_folder, file)
-    df = pd.read_csv(file_path)
-    dfs.append(df)
+if not csv_files:
+    print("No CSV files found in input folder.")
+else:
+    workers = min(32, len(csv_files))
+    print(f"Reading {len(csv_files)} CSV files with {workers} threads...")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        dfs = list(ex.map(pd.read_csv, csv_files))
 
-# Concatenate all DataFrames into one
-combined_df = pd.concat(dfs, ignore_index=True)
-
-# Save the concatenated DataFrame as a single CSV file
-combined_df.to_csv(output_file, index=False)
-
-print(f"All CSV files have been concatenated and saved to {output_file}")
+    combined_df = pd.concat(dfs, ignore_index=True)
+    combined_df.to_csv(output_file, index=False)
+    print(f"Saved {len(combined_df):,} rows to {output_file}")

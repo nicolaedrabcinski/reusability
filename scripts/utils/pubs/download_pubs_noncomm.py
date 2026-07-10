@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import os
+from time import sleep
 
 base_url = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_bulk/oa_noncomm/xml/"
 download_dir = "/home/nicolaedrabcinski/research/lab/new_reuse/data/publications/oa_noncomm"

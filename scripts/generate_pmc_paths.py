@@ -1,9 +1,9 @@
 import os
 
-cur_dir = os.getcwd()
+DATA_DIR = '../data'
 
-pubs_dir = "/home/nicolaedrabcinski/research/lab/new_reuse/data/publications_unzippped"
-path_file = "/home/nicolaedrabcinski/research/lab/new_reuse/data/pmc_paths.txt"
+pubs_dir = f'{DATA_DIR}/publications'
+path_file = f'{DATA_DIR}/pmc_paths.txt'
 
 xml_paths = []
 
