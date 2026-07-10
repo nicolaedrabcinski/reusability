@@ -1,7 +1,9 @@
 import os
 
+DATA_DIR = '../data'
+
 # Путь к директории, в которой будем искать папки
-directory_path = '/home/nicolaedrabcinski/research/lab/new_reuse/data/publications_unzippped'
+directory_path = f'{DATA_DIR}/publications'
 
 # Переменная для хранения общего количества XML файлов
 total_xml_count = 0

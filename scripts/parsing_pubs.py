@@ -1,15 +1,16 @@
 import os
 import re
-import tarfile
-import time
+import subprocess
 from tqdm import tqdm
 
 # Define paths
-extract_root_dir = '/home/nicolaedrabcinski/research/lab/new_reuse/data/publications_unzippped'
-interim_rp_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/raw_pub_data'
-interim_jn_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/journal_names'
-interim_acc_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/accessions'
-interim_pfm_data = '/home/nicolaedrabcinski/research/lab/new_reuse/data/pre_filter_matrices'
+DATA_DIR = '../data'
+
+extract_root_dir = f'{DATA_DIR}/publications_unzipped'
+interim_rp_data = f'{DATA_DIR}/raw_pub_data'
+interim_jn_data = f'{DATA_DIR}/journal_names'
+interim_acc_data = f'{DATA_DIR}/accessions'
+interim_pfm_data = f'{DATA_DIR}/pre_filter_matrices'
 
 # Functions
 def search_journal_xml(directory_path):
@@ -21,7 +22,7 @@ def search_journal_xml(directory_path):
         for file_name in files:
             if file_name.endswith('.xml'):
                 file_path = os.path.join(root, file_name)
-                with open(file_path, 'r') as file:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
                     content = file.read()
                     matches.extend(re.findall(regex_pattern, content))
 
@@ -38,19 +39,19 @@ def generate_tmp_file_paths(file_path):
 
 def extract_accession_numbers(file_path, tmp_raw_pub_data):
     """Extract accession numbers from files and save to a temporary file."""
-    grep_command = (
-        f"grep -o -r -E -H "
-        f"-e '[SDE]R[APXRSZ][0-9]{{6,7}}' "
-        f"-e 'PRJNA[0-9]{{6,7}}' "
-        f"-e 'PRJD[0-9]{{6,7}}' "
-        f"-e 'PRJEB[0-9]{{6,7}}' "
-        f"-e 'GDS[0-9]{{1,6}}' "
-        f"-e 'GSE[0-9]{{1,6}}' "
-        f"-e 'GPL[0-9]{{1,6}}' "
-        f"-e 'GSM[0-9]{{1,6}}' "
-        f"{file_path}"
-    )
-    os.system(f"{grep_command} > {tmp_raw_pub_data}")
+    grep_args = [
+        "grep", "-o", "-r", "-E", "-H",
+        "-e", r"[SDE]R[APXRSZ][0-9]{6,7}",
+        "-e", r"PRJNA[0-9]{6,7}",
+        "-e", r"PRJD[0-9]{6,7}",
+        "-e", r"PRJEB[0-9]{6,7}",
+        "-e", r"GDS[0-9]{1,6}",
+        "-e", r"GSE[0-9]{1,6}",
+        "-e", r"GSM[0-9]{1,6}",
+        file_path,
+    ]
+    with open(tmp_raw_pub_data, "w") as out:
+        subprocess.run(grep_args, stdout=out)
 
 def format_raw_data(tmp_raw_pub_data):
     """Format raw data into CSV format."""

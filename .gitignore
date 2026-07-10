@@ -1,0 +1,20 @@
+# Data
+data/
+
+# Runtime logs and output artifacts
+*.log
+*.txt
+!logs/.gitkeep
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store

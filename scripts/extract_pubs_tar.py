@@ -23,12 +23,14 @@ def extract_tar_gz(source_folder, destination_folder):
                 # Открываем .tar.gz файл
                 with tarfile.open(file_path, 'r:gz') as tar:
                     # Извлекаем все файлы в целевую директорию
-                    tar.extractall(path=target_folder)
+                    tar.extractall(path=target_folder, filter='data')
                 print(f"Разархивирован: {file_path} в {target_folder}")
 
 
-source_folder = '/home/nicolaedrabcinski/research/lab/new_reuse/data/publications'
-destination_folder = '/home/nicolaedrabcinski/research/lab/new_reuse/data/publications_unzippped'
+DATA_DIR = '../data'
+
+source_folder = f'{DATA_DIR}/publications'
+destination_folder = f'{DATA_DIR}/publications_unzipped'
 extract_tar_gz(source_folder, destination_folder)
 
 print("Все файлы разархивированы.")

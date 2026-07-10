@@ -19,41 +19,42 @@ base_url_samples = 'https://www.ncbi.nlm.nih.gov/geo/browse/?view=samples&sort=d
 NUM_SAMPLE_PAGES = get_num_pages(base_url_samples + '1&display=5000')
 
 # Prepare the header for the final CSV
-os.system("echo 'Accession,Title,Sample_Type,Taxonomy,Channels,Platform,Series,Supplementary_Types,Supplementary_Links,SRA_Accession,Contact,Release_Date' > ./geo_samples.csv")
+os.system("echo 'Accession,Title,Sample_Type,Taxonomy,Channels,Platform,Series,Supplementary_Types,Supplementary_Links,SRA_Accession,Contact,Release_Date' > ../data/geo_samples.csv")
 
 # Download and concatenate sample data
 for i in range(1, NUM_SAMPLE_PAGES + 1):
     url = base_url_samples + str(i) + '&display=5000'
-    os.system(f"wget {url} -O ./samples_{i}.csv")
-    os.system(f"sed 1d ./samples_{i}.csv >> ./geo_samples.csv")
-    os.system(f"rm -f ./samples_{i}.csv")
+    os.system(f"wget {url} -O ../data/samples_{i}.csv")
+    os.system(f"sed 1d ../data/samples_{i}.csv >> ../data/geo_samples.csv")
+    os.system(f"rm -f ../data/samples_{i}.csv")
 
 # Repeat the same process for series and platforms
 base_url_series = 'https://www.ncbi.nlm.nih.gov/geo/browse/?view=series&sort=date&mode=csv&page='
 NUM_SERIES_PAGES = get_num_pages(base_url_series + '1&display=5000')
-os.system("echo 'Accession,Title,Series_Type,Taxonomy,Sample_Count,Datasets,Supplementary_Types,Supplementary_Links,PubMed_ID,SRA_Accession,Contact,Release_Date' > ./geo_series.csv")
+os.system("echo 'Accession,Title,Series_Type,Taxonomy,Sample_Count,Datasets,Supplementary_Types,Supplementary_Links,PubMed_ID,SRA_Accession,Contact,Release_Date' > ../data/geo_series.csv")
 for i in range(1, NUM_SERIES_PAGES + 1):
     url = base_url_series + str(i) + '&display=5000'
-    os.system(f"wget {url} -O ./series_{i}.csv")
-    os.system(f"sed 1d ./series_{i}.csv >> ./geo_series.csv")
-    os.system(f"rm -f ./series_{i}.csv")
+    os.system(f"wget {url} -O ../data/series_{i}.csv")
+    os.system(f"sed 1d ../data/series_{i}.csv >> ../data/geo_series.csv")
+    os.system(f"rm -f ../data/series_{i}.csv")
 
 base_url_platforms = 'https://www.ncbi.nlm.nih.gov/geo/browse/?view=platforms&sort=date&mode=csv&page='
 NUM_PLATFORM_PAGES = get_num_pages(base_url_platforms + '1&display=5000')
-os.system("echo 'Accession,Title,Technology,Taxonomy,Data_Rows,Samples_Count,Series_Count,Contact,Release_Date' > ./geo_platforms.csv")
+os.system("echo 'Accession,Title,Technology,Taxonomy,Data_Rows,Samples_Count,Series_Count,Contact,Release_Date' > ../data/geo_platforms.csv")
 for i in range(1, NUM_PLATFORM_PAGES + 1):
     url = base_url_platforms + str(i) + '&display=5000'
-    os.system(f"wget {url} -O ./platforms_{i}.csv")
-    os.system(f"sed 1d ./platforms_{i}.csv >> ./geo_platforms.csv")
-    os.system(f"rm -f ./platforms_{i}.csv")
+    os.system(f"wget {url} -O ../data/platforms_{i}.csv")
+    os.system(f"sed 1d ../data/platforms_{i}.csv >> ../data/geo_platforms.csv")
+    os.system(f"rm -f ../data/platforms_{i}.csv")
 
 # Download SRA reference data
 sources = ["genomic", "genomic single cell", "metagenomic", "metatranscriptomic", "other", "synthetic", "transcriptomic", "transcriptomic single cell", "viral rna"]
 filenames = ["genomic", "genomic_single_cell", "metagenomic", "metatranscriptomic", "other", "synthetic", "transcriptomic", "transcriptomic_single_cell", "viral_rna"]
 
 for i in range(0, len(sources)):
-    os.system(f"wget http://trace.ncbi.nlm.nih.gov/Traces/sra/sra.cgi?save=efetch&db=sra&rettype=runinfo&term={sources[i]}[Source]' -O ./sra_runs_{filenames[i]}.csv")
+    encoded_source = sources[i].replace(" ", "+")
+    os.system(f"wget 'http://trace.ncbi.nlm.nih.gov/Traces/sra/sra.cgi?save=efetch&db=sra&rettype=runinfo&term={encoded_source}[Source]' -O ../data/sra_runs_{filenames[i]}.csv")
 
-os.system("echo 'Run,ReleaseDate,LoadDate,spots,bases,spots_with_mates,avgLength,size_MB,AssemblyName,download_path,Experiment,LibraryName,LibraryStrategy,LibrarySelection,LibrarySource,LibraryLayout,InsertSize,InsertDev,Platform,Model,SRAStudy,BioProject,Study_Pubmed_id,ProjectID,Sample,BioSample,SampleType,TaxID,ScientificName,SampleName,g1k_pop_code,source,g1k_analysis_group,Subject_ID,Sex,Disease,Tumor,Affection_Status,Analyte_Type,Histological_Type,Body_Site,CenterName,Submission,dbgap_study_accession,Consent,RunHash,ReadHash' > ./sra_complete_runs.csv")
+os.system("echo 'Run,ReleaseDate,LoadDate,spots,bases,spots_with_mates,avgLength,size_MB,AssemblyName,download_path,Experiment,LibraryName,LibraryStrategy,LibrarySelection,LibrarySource,LibraryLayout,InsertSize,InsertDev,Platform,Model,SRAStudy,BioProject,Study_Pubmed_id,ProjectID,Sample,BioSample,SampleType,TaxID,ScientificName,SampleName,g1k_pop_code,source,g1k_analysis_group,Subject_ID,Sex,Disease,Tumor,Affection_Status,Analyte_Type,Histological_Type,Body_Site,CenterName,Submission,dbgap_study_accession,Consent,RunHash,ReadHash' > ../data/sra_complete_runs.csv")
 for i in range(0, len(sources)):
-    os.system(f"sed 1d ./sra_runs_{filenames[i]}.csv >> ./sra_complete_runs.csv")
+    os.system(f"sed 1d ../data/sra_runs_{filenames[i]}.csv >> ../data/sra_complete_runs.csv")
