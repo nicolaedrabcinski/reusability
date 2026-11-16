@@ -12,7 +12,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
-DATA_DIR = '../data'
+import argparse
+
+_ap = argparse.ArgumentParser(description='Download SRA run metadata for every accession in a matrix.')
+_ap.add_argument('--data-dir', default='../data', help='Persistent folder for per-accession downloads')
+_ap.add_argument('--matrix', default=None,
+                 help='pre_filter_matrix.csv (default: all CSVs in <data-dir>/pre_filter_matrices)')
+ARGS = _ap.parse_args()
+
+DATA_DIR = ARGS.data_dir
 
 # NCBI SRA: Run/Study/Experiment/Sample for NCBI (SRR/SRP/SRX/SRS) and EBI (ERR/ERP/ERX/ERS)
 # DRA*/ERA* (DDBJ/EBI archives) are routed to ENA API instead.
@@ -32,6 +40,7 @@ os.makedirs(interim_scr_data, exist_ok=True)
 
 # Accessions that were queried successfully but have no SRA runs. Remembered so that
 # re-running the step does not query them again.
+os.makedirs(DATA_DIR, exist_ok=True)
 NO_RUNS_FILE = os.path.join(DATA_DIR, 'sra_no_runs.txt')
 _no_runs_lock = threading.Lock()
 
@@ -159,7 +168,7 @@ def process_batch(values, fetch_fn, workers, desc):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-pfm_csv_files = glob.glob(os.path.join(interim_pfm_data, '*.csv'))
+pfm_csv_files = [ARGS.matrix] if ARGS.matrix else glob.glob(os.path.join(interim_pfm_data, '*.csv'))
 pfm_csv_files_sorted = sorted(pfm_csv_files, key=lambda x: os.path.getsize(x))
 
 already_runs = {

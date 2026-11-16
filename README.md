@@ -20,8 +20,11 @@ The analysis lives in the notebooks (`create` → `analyze` → `visualize`), an
 
 ## Running
 
+The whole data-collection part is one [Nextflow](https://www.nextflow.io/) workflow:
+
 ```bash
-bash run.sh
+nextflow run main.nf --limit 1   # quick test on a single archive
+nextflow run main.nf             # full run (long); add -resume to continue after an interruption
 ```
 
-then run the notebooks in `notebooks/` in order.
+Results appear in `data/`. Then run the notebooks in `notebooks/` in order. Settings (output folder, number of parallel downloads, skipping steps) are in `nextflow.config`.

@@ -3,10 +3,13 @@ import glob
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 
-DATA_DIR = '../data'
+import sys
+
+# usage: concat_sra_runs.py [DATA_DIR] [OUTPUT_FILE]
+DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else '../data'
 
 input_folder = f'{DATA_DIR}/sra_complete_runs/'
-output_file = f'{DATA_DIR}/sra_complete_runs.csv'
+output_file = sys.argv[2] if len(sys.argv) > 2 else f'{DATA_DIR}/sra_complete_runs.csv'
 
 all_files = [f for f in glob.glob(os.path.join(input_folder, '*.csv'))
              if os.path.getsize(f) > 0]
