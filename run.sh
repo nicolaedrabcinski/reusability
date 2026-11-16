@@ -12,7 +12,9 @@ SCRIPTS_DIR="$PROJECT_ROOT/scripts"
 DATA_DIR="$PROJECT_ROOT/data"
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
 
-export NCBI_API_KEY="3b793f2849d9b3519ece0c8312b606b36308"
+# Optional: export NCBI_API_KEY before running to raise NCBI rate limits (3 -> 10 req/s).
+# Never hard-code the key in this file.
+export NCBI_API_KEY="${NCBI_API_KEY:-}"
 
 LIMIT_ARG=""
 FROM_STEP=1

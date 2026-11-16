@@ -1,78 +1,27 @@
-# Reusability
+# Reusability of public omics data
 
-Pipeline for studying data reuse in biomedical publications. Downloads PMC open-access articles, extracts dataset accession numbers (SRA/GEO), links them to reference metadata, and produces matrices for downstream analysis.
+Researchers deposit sequencing and gene-expression data in public repositories (GEO, SRA) so that others can use it again. But how often does that actually happen?
 
-## Data directory
+This project measures it. It follows datasets from the moment they are deposited to the moment they appear in later scientific papers, and asks:
 
-All scripts assume a base data directory at `/home/nicolaedrabcinski/research/lab/new_reuse/data/`. Update the paths in each script if your layout differs.
+- How much public data is reused by someone other than its creators?
+- How quickly does the first reuse happen, and how does reuse change over time?
+- Which repositories, data types, species and journals are reused most?
+- What makes a dataset more likely to be reused?
 
-## Pipeline
+## How it works
 
-### 1. Download publications
+1. **Collect** — gather the full text of open-access biomedical articles.
+2. **Link** — find which public datasets each article mentions.
+3. **Enrich** — attach repository records to each dataset (type, species, release date, and so on).
+4. **Analyse** — compute reuse patterns and produce the figures.
 
-Download PMC open-access bulk XML archives from NCBI FTP (oa_comm, oa_noncomm, oa_other):
+The analysis lives in the notebooks (`create` → `analyze` → `visualize`), and the resulting plots are in `figures/`.
 
-```bash
-python scripts/download_publications.py --data-dir ./data
-```
-
-Options: `--retries N`, `--limit N` (for testing), `--retry-failed`, `--clear-cache`, `--show-stats`.
-
-> The legacy per-subset scripts are kept in `scripts/utils/pubs/` for reference.
-
-### 2. Extract archives
+## Running
 
 ```bash
-python scripts/extract_pubs_tar.py
+bash run.sh
 ```
 
-### 3. Parse publications
-
-Extracts accession numbers (SRA, GEO) and journal names from XML files, producing per-archive pre-filter matrices:
-
-```bash
-python scripts/parsing_pubs.py
-```
-
-### 4. Download reference metadata
-
-GEO samples, series, and platforms:
-
-```bash
-python scripts/utils/refs/download_refs.py
-```
-
-SRA run info per accession:
-
-```bash
-python scripts/utils/sra/download_sra.py
-```
-
-### 5. Postprocess
-
-```bash
-python scripts/count_pubs.py
-python scripts/concat_pre_filter_matrices.py
-python scripts/generate_pmc_paths.py
-python scripts/extract_dates.py
-python scripts/concat_sra_runs.py
-```
-
-### 6. Analysis
-
-```bash
-cd notebooks
-jupyter notebook
-```
-
-Notebooks: `create.ipynb` → `analyze.ipynb` → `visualize.ipynb`
-
-## Requirements
-
-```
-pandas
-tqdm
-lxml
-requests
-beautifulsoup4
-```
+then run the notebooks in `notebooks/` in order.

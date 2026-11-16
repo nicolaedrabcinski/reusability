@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import pandas as pd
 import requests
@@ -40,6 +41,8 @@ def fetch_with_retry(url):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.get(url, timeout=TIMEOUT)
+            if response.status_code == 429 or response.status_code >= 500:
+                raise RuntimeError(f"HTTP {response.status_code}")
             return response
         except Exception as e:
             wait = 2 ** attempt
@@ -52,7 +55,12 @@ def download_and_process_data(data_type):
     local_dir = local_dir_temp[data_type]
     os.makedirs(local_dir, exist_ok=True)
 
-    # Найти уже скачанные страницы (кеш)
+    if '--refresh' in sys.argv:  # drop cached pages so new GEO records are picked up
+        for f in os.listdir(local_dir):
+            if f.startswith(data_type) and f.endswith('.csv'):
+                os.remove(os.path.join(local_dir, f))
+
+    # Already downloaded pages (cache)
     cached = {int(f.split('_')[-1].replace('.csv', ''))
               for f in os.listdir(local_dir)
               if f.startswith(data_type) and f.endswith('.csv')}
@@ -75,11 +83,16 @@ def download_and_process_data(data_type):
                 print(f"[{data_type}] HTTP {response.status_code} on page {page_number}, stopping.")
                 break
 
-            if response.text.strip() == desired_headers[data_type]:
+            text = response.text.strip()
+            if text.lstrip().lower().startswith(('<!doctype', '<html')):
+                raise RuntimeError(f"[{data_type}] page {page_number}: got HTML instead of CSV")
+
+            temp_df = pd.read_csv(StringIO(text))
+            if temp_df.empty:  # header only: past the last page
                 print(f"[{data_type}] No more data after page {page_number - 1}.")
                 break
-
-            temp_df = pd.read_csv(StringIO(response.text))
+            if list(temp_df.columns) != desired_headers[data_type].split(','):
+                print(f"[{data_type}] WARNING: unexpected columns on page {page_number}: {list(temp_df.columns)}")
             temp_csvfile_path = os.path.join(local_dir, f'{data_type}_{page_number}.csv')
             temp_df.to_csv(temp_csvfile_path, index=False)
 

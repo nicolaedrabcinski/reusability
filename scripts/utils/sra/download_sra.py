@@ -1,5 +1,6 @@
 import csv
 import re
+import shlex
 import subprocess
 import os
 import glob
@@ -20,12 +21,32 @@ DATA_DIR = '../data'
 # GEO (GSE/GPL/GDS) are excluded — they don't have SRA runinfo.
 NCBI_PATTERN = re.compile(r'^[SE]R[RPXS]\d+$')
 PRJNA_PATTERN = re.compile(r'^PRJNA\d+$')
-ENA_PATTERN  = re.compile(r'^[DE]R[RPXSA]\d+$')  # DRA/DRR/DRP/DRX/DRS + ERA/ERR...
+# DDBJ (DRR/DRP/DRX/DRS/DRA) and EBI archive-level ERA only: ERR/ERP/ERX/ERS go to NCBI above,
+# so no accession is fetched twice.
+ENA_PATTERN  = re.compile(r'^(?:DR[RPXSA]|ERA)\d+$')
 
 interim_pfm_data = f'{DATA_DIR}/pre_filter_matrices/'
 interim_scr_data = f'{DATA_DIR}/sra_complete_runs/'
 
 os.makedirs(interim_scr_data, exist_ok=True)
+
+# Accessions that were queried successfully but have no SRA runs. Remembered so that
+# re-running the step does not query them again.
+NO_RUNS_FILE = os.path.join(DATA_DIR, 'sra_no_runs.txt')
+_no_runs_lock = threading.Lock()
+
+
+def load_no_runs():
+    if os.path.exists(NO_RUNS_FILE):
+        with open(NO_RUNS_FILE) as f:
+            return {line.strip() for line in f if line.strip()}
+    return set()
+
+
+def record_no_runs(value):
+    with _no_runs_lock:
+        with open(NO_RUNS_FILE, 'a') as f:
+            f.write(value + '\n')
 
 # NCBI rate limit: 3 req/s without API key, 10/s with key
 NCBI_API_KEY = os.environ.get('NCBI_API_KEY', '')
@@ -69,8 +90,10 @@ def fetch_ncbi_accession(value):
     if NCBI_API_KEY:
         env['NCBI_API_KEY'] = NCBI_API_KEY
     result = subprocess.run(
-        f"esearch -db sra -query {value} | efetch -format runinfo > {out_path}",
+        # pipefail: a failing esearch must not be hidden by a succeeding efetch
+        f"set -o pipefail; esearch -db sra -query {shlex.quote(value)} | efetch -format runinfo > {shlex.quote(out_path)}",
         shell=True,
+        executable='/bin/bash',
         capture_output=True,
         env=env,
     )
@@ -78,7 +101,10 @@ def fetch_ncbi_accession(value):
     if result.returncode == 0 and os.path.exists(out_path):
         if os.path.getsize(out_path) < 10:
             os.remove(out_path)
-            return value, False
+            record_no_runs(value)
+            return value, True
+    if result.returncode != 0 and os.path.exists(out_path):
+        os.remove(out_path)  # do not leave a partial file that looks like a finished download
     return value, result.returncode == 0
 
 
@@ -91,12 +117,16 @@ def fetch_ena_accession(value):
     )
     try:
         resp = requests.get(url, timeout=30)
-        if resp.status_code != 200 or not resp.text.strip():
+        if resp.status_code != 200:
             return value, False
+        if not resp.text.strip():
+            record_no_runs(value)
+            return value, True
 
         df = pd.read_csv(StringIO(resp.text), sep='\t')
         if df.empty:
-            return value, False
+            record_no_runs(value)
+            return value, True
 
         df = df.rename(columns=ENA_TO_NCBI)
         df.to_csv(out_path, index=False)
@@ -133,9 +163,10 @@ pfm_csv_files = glob.glob(os.path.join(interim_pfm_data, '*.csv'))
 pfm_csv_files_sorted = sorted(pfm_csv_files, key=lambda x: os.path.getsize(x))
 
 already_runs = {
-    f.replace('output_', '').replace('.csv', '')
+    f[len('output_'):-len('.csv')]
     for f in os.listdir(interim_scr_data)
-}
+    if f.startswith('output_') and f.endswith('.csv')
+} | load_no_runs()
 counter = len(already_runs)
 print(f"Already downloaded (total): {counter}")
 

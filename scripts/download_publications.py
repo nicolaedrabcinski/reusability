@@ -1,13 +1,11 @@
 from pathlib import Path
 from tqdm import tqdm
 from lxml import etree
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from accessions import find_accessions
 import ftplib
 import logging
-import os
-import re
 import subprocess
-import tarfile
+import gzip
 import time
 import json
 import hashlib
@@ -138,222 +136,155 @@ class CacheManager:
             'failed': len(self.failed_files)
         }
 
-ACCESSION_PATTERNS = [
-    # SRA — Run/Study/Experiment/Sample/Submission/Archive (NCBI/EBI/DDBJ)
-    r'\b[SDE]RR[0-9]{6,7}\b',  # Run        (SRR / ERR / DRR)
-    r'\b[SDE]RP[0-9]{6,7}\b',  # Study      (SRP / ERP / DRP)
-    r'\b[SDE]RX[0-9]{6,7}\b',  # Experiment (SRX / ERX / DRX)
-    r'\b[SDE]RS[0-9]{6,7}\b',  # Sample     (SRS / ERS / DRS)
-    r'\b[SDE]RZ[0-9]{6,7}\b',  # Submission (SRZ / ERZ / DRZ)
-    r'\b[SDE]RA[0-9]{6,7}\b',  # Archive    (SRA / ERA / DRA)
-    r'\bPRJNA[0-9]{6,7}\b',    # BioProject NCBI
-    # GEO — only officially documented accession types
-    r'\bGDS[0-9]{1,6}\b',      # GEO DataSet
-    r'\bGSE[0-9]{1,6}\b',      # GEO Series
-    r'\bGPL[0-9]{1,6}\b',      # GEO Platform
-]
-
-# FTP servers and directories
+# FTP servers and directories (Europe PMC mirror of the PMC open-access set;
+# each file is one .xml.gz holding many concatenated <article> elements)
 FTP_SERVERS = [
-    ('ftp.ncbi.nlm.nih.gov', '/pub/pmc/oa_bulk/oa_comm/xml/'),
-    ('ftp.ncbi.nlm.nih.gov', '/pub/pmc/oa_bulk/oa_noncomm/xml/'),
-    ('ftp.ncbi.nlm.nih.gov', '/pub/pmc/oa_bulk/oa_other/xml/')
+    ('ftp.ebi.ac.uk', '/pub/databases/pmc/oa/')
 ]
 
-def get_tar_gz_filenames(ftp_server, ftp_dir, logger):
-    """Retrieve a list of .tar.gz files from an FTP directory with error handling."""
+def get_xml_gz_filenames(ftp_server, ftp_dir, logger):
+    """Retrieve a list of .xml.gz files from an FTP directory with error handling."""
     try:
         with ftplib.FTP(ftp_server, timeout=30) as ftp:
             ftp.login()
             ftp.cwd(ftp_dir)
             file_list = ftp.nlst()
-            tar_gz_files = [file for file in file_list if file.endswith('.tar.gz')]
-            logger.info(f"Found {len(tar_gz_files)} .tar.gz files in {ftp_server}{ftp_dir}")
-            return tar_gz_files
+            xml_gz_files = sorted(f for f in file_list if f.endswith('.xml.gz'))
+            logger.info(f"Found {len(xml_gz_files)} .xml.gz files in {ftp_server}{ftp_dir}")
+            return xml_gz_files
     except ftplib.all_errors as e:
         logger.error(f"Error connecting to FTP server {ftp_server}: {e}")
         return []
 
 def download_file_from_ftp(ftp_server, ftp_dir, filename, archive_path, cache_manager, logger):
     """Download a file from an FTP server with caching."""
-    # Проверяем, скачан ли файл уже
-    if cache_manager.is_file_downloaded(ftp_server, ftp_dir, filename) and archive_path.exists():
-        logger.info(f"File already downloaded (cached): {archive_path.name}")
-        return True
-    
-    # Проверяем, существует ли файл на диске (без записи в кеше)
-    if archive_path.exists():
-        file_size = archive_path.stat().st_size
-        if file_size > 0:
-            logger.info(f"File exists on disk, marking as downloaded: {archive_path.name}")
+    if archive_path.is_file() and archive_path.stat().st_size > 0:
+        if not cache_manager.is_file_downloaded(ftp_server, ftp_dir, filename):
             cache_manager.mark_file_downloaded(ftp_server, ftp_dir, filename)
-            return True
-        else:
-            logger.warning(f"Empty file found, re-downloading: {archive_path.name}")
-            archive_path.unlink()
-    
+        logger.info(f"File already on disk: {archive_path.name}")
+        return True
+    if archive_path.is_dir():
+        logger.error(f"{archive_path} is a directory, expected a file. Remove it and retry.")
+        return False
+    archive_path.unlink(missing_ok=True)
+
     try:
-        cmd = ['wget', f'ftp://{ftp_server}{ftp_dir}/{filename}', '-O', str(archive_path), '--continue', '--quiet']
-        subprocess.run(cmd, check=True)
-        
-        # Проверяем, что файл скачался корректно
-        if archive_path.exists() and archive_path.stat().st_size > 0:
+        url = f"ftp://{ftp_server}/{ftp_dir.strip('/')}/{filename}"
+        subprocess.run(['wget', url, '-O', str(archive_path), '--continue', '--quiet'], check=True)
+        if archive_path.is_file() and archive_path.stat().st_size > 0:
             logger.info(f"File downloaded: {archive_path.name}")
             cache_manager.mark_file_downloaded(ftp_server, ftp_dir, filename)
             return True
-        else:
-            logger.error(f"Downloaded file is empty or missing: {filename}")
-            return False
-            
+        logger.error(f"Downloaded file is empty or missing: {filename}")
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f"Error downloading {filename}: {e}")
         return False
 
-def extract_tar_gz(archive_path, extract_dir, logger):
-    """File-by-file extraction."""
+def _article_pmcid(article):
+    """Return the PMC id (e.g. 'PMC10000002') of an <article> element, or None."""
+    for el in article.iterfind('.//article-meta/article-id'):
+        if el.get('pub-id-type') in ('pmcid', 'pmc') and el.text:
+            val = el.text.strip()
+            return val if val.upper().startswith('PMC') else f'PMC{val}'
+    return None
+
+def _article_journal(article):
+    el = article.find('.//journal-meta/journal-id[@journal-id-type="nlm-ta"]')
+    if el is not None and el.text:
+        return el.text.replace(',', ' ').strip()
+    return None
+
+def process_archive(archive_path, dirs, logger):
+    """Stream one .xml.gz archive article by article.
+
+    Writes a pre-filter matrix CSV (journal_name, pmc_id, accession) and saves the XML of
+    every article that mentions at least one accession to publications/<archive>/<PMCID>.xml
+    so later steps (dates) can read it.
+    """
+    archive_name = archive_path.name[:-len('.xml.gz')]
+    output_path = dirs['interim_pfm'] / f"{archive_name}_pre_filter_matrix.csv"
+    tmp_path = output_path.with_suffix('.csv.tmp')
+    article_dir = dirs['download_pub'] / archive_name
+    logger.info(f"Processing archive: {archive_path}")
+
+    rows = []
+    n_articles = 0
     try:
-        with tarfile.open(archive_path, "r:gz") as tar:
-            members = [m for m in tar.getmembers() if m.isfile()]
-            for member in tqdm(members, desc=f"Extracting {archive_path.name}"):
-                try:
-                    tar.extract(member, path=extract_dir)
-                except Exception as e:
-                    logger.warning(f"Failed to extract file {member.name}: {e}")
-        logger.info(f"Archive successfully extracted {archive_path}")
-        return True
-    except (tarfile.TarError, EOFError, OSError) as e:
-        logger.error(f"Error while extracting {archive_path}: {e}")
-        logger.info(f"Deleting corrupted archive: {archive_path}")
+        article_dir.mkdir(exist_ok=True, parents=True)
+        with gzip.open(archive_path, 'rb') as fh:
+            for _, elem in tqdm(etree.iterparse(fh, events=('end',), tag='article',
+                                                recover=True, huge_tree=True),
+                                desc=f"Parsing {archive_name}", unit="article"):
+                n_articles += 1
+                xml_bytes = etree.tostring(elem, encoding='utf-8')
+                accessions = find_accessions(xml_bytes.decode('utf-8', errors='ignore'))
+                if accessions:
+                    pmc_id = _article_pmcid(elem)
+                    journal = _article_journal(elem)
+                    if pmc_id and journal:
+                        rows.extend({'journal_name': journal, 'pmc_id': pmc_id, 'accession': a}
+                                    for a in sorted(accessions))
+                        (article_dir / f"{pmc_id}.xml").write_bytes(xml_bytes)
+                # free memory
+                elem.clear()
+                while elem.getprevious() is not None:
+                    del elem.getparent()[0]
+    except (OSError, EOFError, etree.XMLSyntaxError) as e:
+        logger.error(f"Error while parsing {archive_path}: {e}")
+        tmp_path.unlink(missing_ok=True)
+        archive_path.unlink(missing_ok=True)  # likely truncated; force re-download
+        return False
+
+    if n_articles == 0:
+        logger.error(f"No <article> elements found in {archive_path}")
         archive_path.unlink(missing_ok=True)
         return False
 
-def _parse_xml_worker(xml_path_str):
-    """Top-level worker for ProcessPoolExecutor: parse one XML file, return rows."""
-    xml_path = Path(xml_path_str)
-    pmc_id = xml_path.stem
-    journal_name = None
-    try:
-        for _, elem in etree.iterparse(xml_path_str, events=('end',), tag='journal-meta', recover=True):
-            journal_id_elem = elem.find('.//journal-id[@journal-id-type="nlm-ta"]')
-            if journal_id_elem is not None and journal_id_elem.text:
-                journal_name = journal_id_elem.text.replace(',', ' ').strip()
-            elem.clear()
-            break
-    except Exception:
-        pass
-
-    accessions = set()
-    try:
-        content = xml_path.read_text(encoding='utf-8', errors='ignore')
-        for pattern in ACCESSION_PATTERNS:
-            accessions.update(re.findall(pattern, content))
-    except Exception:
-        pass
-
-    if journal_name and accessions:
-        return [{'journal_name': journal_name, 'pmc_id': pmc_id, 'accession': acc} for acc in accessions]
-    return []
-
-
-def process_xml_file(xml_path, logger):
-    """Extract journal name and accession numbers from a single XML file."""
-    rows = _parse_xml_worker(str(xml_path))
-    if rows:
-        return rows[0]['journal_name'], rows[0]['pmc_id'], [r['accession'] for r in rows]
-    return None, xml_path.stem, []
-
-def process_file(file_path, dirs, logger):
-    """Process all XML files in directory: extract journal name and accessions per file."""
-    logger.info(f"Processing directory: {file_path}")
-
-    archive_name = Path(file_path).name
-    output_path = dirs['interim_pfm'] / f"{archive_name}_pre_filter_matrix.csv"
-
-    xml_files = [str(p) for p in Path(file_path).glob('**/*.xml')]
-    n = len(xml_files)
-    workers = os.cpu_count() or 4
-    logger.info(f"Found {n} XML files to parse — using {workers} workers")
-
-    rows = []
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_parse_xml_worker, f): f for f in xml_files}
-        with tqdm(total=n, desc=f"Parsing {archive_name}", unit="xml") as pbar:
-            for i, future in enumerate(as_completed(futures), 1):
-                rows.extend(future.result())
-                pbar.update(1)
-                if i % 50_000 == 0:
-                    logger.info(f"  {i}/{n} XML parsed, {len(rows)} rows so far")
-
-    pd.DataFrame(rows, columns=['journal_name', 'pmc_id', 'accession']).to_csv(output_path, index=False)
-    logger.info(f"Wrote {len(rows)} rows to {output_path}")
+    pd.DataFrame(rows, columns=['journal_name', 'pmc_id', 'accession']).to_csv(tmp_path, index=False)
+    tmp_path.replace(output_path)  # atomic: a partial CSV is never mistaken for a finished one
+    logger.info(f"{n_articles} articles parsed, wrote {len(rows)} rows to {output_path}")
     return True
-
-def process_archive(archive_path, extract_dir, dirs, logger):
-    """Process an archive: extract and handle its contents."""
-    logger.info(f"Processing archive: {archive_path}")
-    
-    try:
-        if not os.path.exists(archive_path):
-            logger.error(f"Archive {archive_path} does not exist.")
-            return False
-        
-        if extract_tar_gz(archive_path, extract_dir, logger):
-            return process_file(extract_dir, dirs, logger)
-        else:
-            logger.error(f"Failed to extract {archive_path}")
-            return False
-    except Exception as e:
-        logger.error(f"An error occurred while processing archive {archive_path}: {e}")
-        return False
 
 def download_and_process_file(args):
     """Download and process a single file."""
-    ftp_server, ftp_dir, filename, dirs, cache_manager, logger, retries = args
-    
+    ftp_server, ftp_dir, filename, dirs, cache_manager, logger, retries, keep_archives = args
+
     archive_path = dirs['download_pub'] / filename
-    extract_dir = Path(str(archive_path).replace('.tar.gz', ''))
-    
-    # Проверяем, обработан ли файл полностью
+
     if cache_manager.is_file_processed(ftp_server, ftp_dir, filename):
         logger.info(f"File {filename} already fully processed (cached), skipping.")
         return True, filename
-    
-    # Проверяем, не провалился ли файл ранее (опционально можно пропустить)
+
     if cache_manager.is_file_failed(ftp_server, ftp_dir, filename):
         logger.info(f"File {filename} previously failed, skipping (use --retry-failed to retry).")
         return False, filename
-    
-    # Проверяем результирующий файл
-    archive_name = filename.replace('.tar.gz', '')
+
+    archive_name = filename[:-len('.xml.gz')]
     pre_filter_matrix = dirs['interim_pfm'] / f"{archive_name}_pre_filter_matrix.csv"
-    if os.path.exists(pre_filter_matrix) and os.path.getsize(pre_filter_matrix) > 0:
+    if pre_filter_matrix.exists() and pre_filter_matrix.stat().st_size > 0:
         logger.info(f"Output file exists for {filename}, marking as processed.")
         cache_manager.mark_file_processed(ftp_server, ftp_dir, filename)
         return True, filename
-    
-    os.makedirs(extract_dir, exist_ok=True)
-    
+
     for attempt in range(retries):
         try:
             if download_file_from_ftp(ftp_server, ftp_dir, filename, archive_path, cache_manager, logger):
-                if process_archive(archive_path, extract_dir, dirs, logger):
+                if process_archive(archive_path, dirs, logger):
                     cache_manager.mark_file_processed(ftp_server, ftp_dir, filename)
+                    if not keep_archives:
+                        archive_path.unlink(missing_ok=True)
                     return True, filename
-            
-            if attempt < retries - 1:
-                logger.info(f"Retrying download of {filename} (attempt {attempt + 2}/{retries})")
-                time.sleep(5 * (attempt + 1))
         except Exception as e:
             logger.error(f"Error processing {filename}: {e}")
-            if attempt < retries - 1:
-                logger.info(f"Retrying download of {filename} (attempt {attempt + 2}/{retries})")
-                time.sleep(5 * (attempt + 1))
-    
-    # Отмечаем как неудачный
+        if attempt < retries - 1:
+            logger.info(f"Retrying {filename} (attempt {attempt + 2}/{retries})")
+            time.sleep(5 * (attempt + 1))
+
     cache_manager.mark_file_failed(ftp_server, ftp_dir, filename)
     return False, filename
 
-def download_and_process_ftp_files(file_list, ftp_server, ftp_dir, dirs, cache_manager, logger, retries=3):
+def download_and_process_ftp_files(file_list, ftp_server, ftp_dir, dirs, cache_manager, logger, retries=3, keep_archives=False):
     """Download and process files from an FTP server sequentially."""
     failed_downloads = []
     successful_downloads = []
@@ -365,7 +296,7 @@ def download_and_process_ftp_files(file_list, ftp_server, ftp_dir, dirs, cache_m
             skipped_downloads.append(filename)
             continue
             
-        success, name = download_and_process_file((ftp_server, ftp_dir, filename, dirs, cache_manager, logger, retries))
+        success, name = download_and_process_file((ftp_server, ftp_dir, filename, dirs, cache_manager, logger, retries, keep_archives))
         if success:
             successful_downloads.append(name)
         else:
@@ -380,13 +311,15 @@ def download_and_process_ftp_files(file_list, ftp_server, ftp_dir, dirs, cache_m
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Download and process publication data from NCBI FTP.')
+    parser = argparse.ArgumentParser(description='Download and process publication data from the Europe PMC FTP.')
     parser.add_argument('--data-dir', type=str, default='../data',
                         help='Base directory for storing data (default: ./data)')
     parser.add_argument('--retries', type=int, default=3, 
                         help='Number of retry attempts on failure (default: 3)')
     parser.add_argument('--limit', type=int, default=None, 
                         help='Limit the number of files to download for testing (default: no limit)')
+    parser.add_argument('--keep-archives', action='store_true',
+                        help='Keep downloaded .xml.gz archives after processing (default: delete)')
     parser.add_argument('--retry-failed', action='store_true',
                         help='Retry previously failed files')
     parser.add_argument('--clear-cache', action='store_true',
@@ -447,21 +380,21 @@ def main():
     for ftp_server, ftp_dir in FTP_SERVERS:
         logger.info(f"Retrieving file list from {ftp_server}{ftp_dir}")
         
-        tar_gz_files = get_tar_gz_filenames(ftp_server, ftp_dir, logger)
+        xml_gz_files = get_xml_gz_filenames(ftp_server, ftp_dir, logger)
         
-        if args.limit and len(tar_gz_files) > args.limit:
-            logger.info(f"Limiting file list to {args.limit} (from {len(tar_gz_files)})")
-            tar_gz_files = tar_gz_files[:args.limit]
+        if args.limit and len(xml_gz_files) > args.limit:
+            logger.info(f"Limiting file list to {args.limit} (from {len(xml_gz_files)})")
+            xml_gz_files = xml_gz_files[:args.limit]
         
-        total_files += len(tar_gz_files)
+        total_files += len(xml_gz_files)
         
-        if not tar_gz_files:
+        if not xml_gz_files:
             logger.warning(f"No files found on {ftp_server}{ftp_dir}")
             continue
         
         successful, failed, skipped = download_and_process_ftp_files(
-            tar_gz_files, ftp_server, ftp_dir, dirs, cache_manager, logger, 
-            retries=args.retries
+            xml_gz_files, ftp_server, ftp_dir, dirs, cache_manager, logger, 
+            retries=args.retries, keep_archives=args.keep_archives
         )
 
         total_success += len(successful)
