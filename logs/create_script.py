@@ -169,7 +169,7 @@ pmcData
 
 
 # perform QC with gold standard from Penn group (Casey + Kurt)
-gsPMC = pd.read_table("/home/nicolaedrabcinski/open-science-analytics/data/pubmed_mappings.tsv")
+gsPMC = pd.read_table("../data/pubmed_mappings.tsv")
 gsPMC.columns = ["SRA_accession_code", "GEO_accession_code", "pm_ID", "pmc_ID"]
 gsPMC
 
