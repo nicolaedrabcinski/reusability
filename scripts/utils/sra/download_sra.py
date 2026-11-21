@@ -4,7 +4,9 @@ import shlex
 import subprocess
 import os
 import glob
+import sys
 import threading
+import time
 import requests
 import pandas as pd
 from io import StringIO
@@ -61,6 +63,7 @@ def record_no_runs(value):
 NCBI_API_KEY = os.environ.get('NCBI_API_KEY', '')
 NCBI_WORKERS = 10 if NCBI_API_KEY else 3
 ENA_WORKERS  = 4  # ENA portal API recommended limit
+RETRY_ROUNDS = 3
 
 _counter_lock = threading.Lock()
 counter = 0
@@ -91,30 +94,33 @@ ENA_TO_NCBI = {
 def fetch_ncbi_accession(value):
     """Query NCBI esearch | efetch for one SRR/SRP/SRX/SRS/PRJNA accession.
 
-    esearch 19.2+ uses the NCBI_API_KEY environment variable automatically —
-    the -api_key CLI flag is not supported and causes silent failures.
+    esearch 19.2+ reads NCBI_API_KEY from the environment.
+    "No runs" is recorded only when esearch reports Count 0. An empty efetch
+    result after a non-zero count (throttling, network) is a failure and is
+    retried, so it never lands in sra_no_runs.txt by mistake.
     """
     out_path = os.path.join(interim_scr_data, f'output_{value}.csv')
     env = os.environ.copy()
     if NCBI_API_KEY:
         env['NCBI_API_KEY'] = NCBI_API_KEY
-    result = subprocess.run(
-        # pipefail: a failing esearch must not be hidden by a succeeding efetch
-        f"set -o pipefail; esearch -db sra -query {shlex.quote(value)} | efetch -format runinfo > {shlex.quote(out_path)}",
-        shell=True,
-        executable='/bin/bash',
-        capture_output=True,
-        env=env,
-    )
-    # Empty or header-only file means no SRA runs for this accession
-    if result.returncode == 0 and os.path.exists(out_path):
-        if os.path.getsize(out_path) < 10:
-            os.remove(out_path)
-            record_no_runs(value)
-            return value, True
-    if result.returncode != 0 and os.path.exists(out_path):
-        os.remove(out_path)  # do not leave a partial file that looks like a finished download
-    return value, result.returncode == 0
+    search = subprocess.run(['esearch', '-db', 'sra', '-query', value],
+                            capture_output=True, text=True, env=env)
+    m = re.search(r'<Count>(\d+)</Count>', search.stdout)
+    if search.returncode != 0 or not m:
+        return value, False
+    if int(m.group(1)) == 0:
+        record_no_runs(value)
+        return value, True
+    fetch = subprocess.run(['efetch', '-format', 'runinfo'], input=search.stdout,
+                           capture_output=True, text=True, env=env)
+    lines = [l for l in fetch.stdout.splitlines() if l.strip()]
+    if fetch.returncode != 0 or len(lines) < 2 or not lines[0].startswith('Run,'):
+        return value, False
+    tmp = out_path + '.part'
+    with open(tmp, 'w') as f:
+        f.write(fetch.stdout)
+    os.replace(tmp, out_path)  # never leave a partial file that looks finished
+    return value, True
 
 
 def fetch_ena_accession(value):
@@ -179,6 +185,7 @@ already_runs = {
 counter = len(already_runs)
 print(f"Already downloaded (total): {counter}")
 
+all_failed = []
 for csv_file in pfm_csv_files_sorted:
     print(f"\nProcessing CSV file: {csv_file}")
 
@@ -201,11 +208,32 @@ for csv_file in pfm_csv_files_sorted:
         print(f"All accessions already downloaded for: {csv_file}")
         continue
 
+    failed = []
     if ncbi_todo:
-        process_batch(ncbi_todo, fetch_ncbi_accession, NCBI_WORKERS, 'NCBI download')
+        failed += process_batch(ncbi_todo, fetch_ncbi_accession, NCBI_WORKERS, 'NCBI download')
 
     if prjna_todo:
-        process_batch(prjna_todo, fetch_ncbi_accession, NCBI_WORKERS, 'PRJNA download')
+        failed += process_batch(prjna_todo, fetch_ncbi_accession, NCBI_WORKERS, 'PRJNA download')
 
     if ena_todo:
-        process_batch(ena_todo, fetch_ena_accession, ENA_WORKERS, 'ENA download')
+        failed += process_batch(ena_todo, fetch_ena_accession, ENA_WORKERS, 'ENA download')
+
+    # retry failures, one worker at a time and with a pause, before giving up
+    for attempt in range(1, RETRY_ROUNDS + 1):
+        if not failed:
+            break
+        time.sleep(30 * attempt)
+        ena_f = [v for v in failed if ENA_PATTERN.match(v)]
+        ncbi_f = [v for v in failed if not ENA_PATTERN.match(v)]
+        failed = []
+        if ncbi_f:
+            failed += process_batch(ncbi_f, fetch_ncbi_accession, 1, f'NCBI retry {attempt}')
+        if ena_f:
+            failed += process_batch(ena_f, fetch_ena_accession, 1, f'ENA retry {attempt}')
+    all_failed += failed
+
+FAILED_FILE = os.path.join(DATA_DIR, 'sra_failed.txt')
+with open(FAILED_FILE, 'w') as f:
+    f.writelines(v + '\n' for v in all_failed)
+print(f"\nStill failing after {RETRY_ROUNDS} retry rounds: {len(all_failed)} (listed in {FAILED_FILE})")
+sys.exit(1 if all_failed else 0)
