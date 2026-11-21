@@ -10,6 +10,7 @@ nextflow.enable.dsl = 2
  *        │
  *        └──> SRA run metadata ──> sra_complete_runs.csv
  *   GEO series / samples / platforms ──> geo_*.csv   (independent of the above)
+ *   refine.bio gold standard ──> pubmed_mappings.tsv (independent of the above)
  *
  * Results go to params.outdir (default ./data) with the names the notebooks expect.
  * Run:     nextflow run main.nf
@@ -82,6 +83,19 @@ process GEO_REFS {
     """
 }
 
+process GOLD_STANDARD {
+    // pubmed_mappings.tsv: refine.bio RNA-SEQ experiments with PMC IDs (QC reference for create.ipynb).
+    publishDir params.outdir, mode: 'copy'
+
+    output:
+    path 'pubmed_mappings.tsv'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/utils/gold/download_gold_standard.py --out pubmed_mappings.tsv
+    """
+}
+
 process SRA_DOWNLOAD {
     // One task: NCBI/ENA are rate-limited. Per-accession files live in outdir, so an
     // interrupted run continues where it stopped.
@@ -130,7 +144,12 @@ workflow {
         GEO_REFS()
     }
 
-    // 3. SRA runs for every accession found
+    // 3. Gold standard for the QC step in the notebooks
+    if (!params.skip_gold) {
+        GOLD_STANDARD()
+    }
+
+    // 4. SRA runs for every accession found
     if (!params.skip_sra) {
         SRA_CONCAT(SRA_DOWNLOAD(matrix))
     }

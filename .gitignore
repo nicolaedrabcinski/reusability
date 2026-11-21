@@ -23,3 +23,9 @@ venv/
 work/
 .nextflow/
 .nextflow.log*
+
+# Run artifacts (per-machine)
+RUN_LOG.md
+RUN_REPORT.md
+report_for_analyst.md
+*.docx

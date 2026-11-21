@@ -32,5 +32,8 @@ else:
 
     dfs = [df for df in results if df is not None]
     merged_data = pd.concat(dfs, ignore_index=True)
+    n_before = len(merged_data)
+    merged_data = merged_data.drop_duplicates(subset='Run', keep='first')
+    print(f'Removed {n_before - len(merged_data):,} duplicate Run rows (keep first)')
     merged_data.to_csv(output_file, index=False)
     print(f'Merged {len(merged_data):,} rows saved to {output_file}')
