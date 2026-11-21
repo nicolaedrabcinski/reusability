@@ -30,7 +30,7 @@ DATA_DIR = ARGS.data_dir
 # PRJNA (BioProject) is queried via NCBI esearch to get its SRP/runs.
 # GEO (GSE/GPL/GDS) are excluded — they don't have SRA runinfo.
 NCBI_PATTERN = re.compile(r'^[SE]R[RPXS]\d+$')
-PRJNA_PATTERN = re.compile(r'^PRJNA\d+$')
+PRJNA_PATTERN = re.compile(r'^PRJ(?:NA|EB|DB)\d+$')  # NCBI SRA indexes all three
 # DDBJ (DRR/DRP/DRX/DRS/DRA) and EBI archive-level ERA only: ERR/ERP/ERX/ERS go to NCBI above,
 # so no accession is fetched twice.
 ENA_PATTERN  = re.compile(r'^(?:DR[RPXSA]|ERA)\d+$')
