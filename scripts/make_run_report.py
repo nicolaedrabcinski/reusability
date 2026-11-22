@@ -1,13 +1,14 @@
-"""Build RUN_REPORT.md from data/ and RUN_LOG.md (read-only on data; never touches secrets).
+"""Build RUN_REPORT.md from data/ (read-only on data; never touches secrets).
 
-Usage: python scripts/make_run_report.py [--data-dir data] [--out RUN_REPORT.md]
+Called by the REPORT process of main.nf (--mode analyze, also at the end of --mode collect).
+RUN_LOG.md, if present, is the hand-written history of earlier runs and is included as is.
+Usage: python scripts/make_run_report.py [--data-dir data] [--out RUN_REPORT.md] [--nextflow-version X]
 Every section is guarded: a missing file is reported as missing, not as an error.
 """
 import argparse
 import glob
 import os
 import re
-import subprocess
 import sys
 
 import pandas as pd
@@ -16,6 +17,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--data-dir', default='data')
 ap.add_argument('--out', default='RUN_REPORT.md')
 ap.add_argument('--log', default='RUN_LOG.md')
+ap.add_argument('--nextflow-version', default='unknown')
+ap.add_argument('--notebook-logs', default='logs')
 args = ap.parse_args()
 D = args.data_dir
 out = []
@@ -62,16 +65,18 @@ p()
 # ---- a) what was run
 p('## a) Запуск')
 log = open(args.log).read() if os.path.exists(args.log) else ''
-p(f'Версии: python {sys.version.split()[0]}, pandas {pd.__version__}; '
-  + subprocess.run(['nextflow', '-v'], capture_output=True, text=True).stdout.strip().replace('\n', ' '))
-p('Команда: `nohup bash run_full.sh > logs/run_YYYYMMDD.log &` (стадии a–d последовательно, каждая с `-resume`, до 5 перезапусков; затем `run_post.sh`).')
+p(f'Версии: python {sys.version.split()[0]}, pandas {pd.__version__}; nextflow {args.nextflow_version}')
+p('Команда: `nextflow run main.nf -resume` (сбор: публикации → GEO → SRA → перепроверка SRA → gold standard, '
+  'затем ноутбуки и этот отчёт); только анализ: `nextflow run main.nf --mode analyze`. '
+  'Ход прогона: data/nextflow_report.html, data/nextflow_timeline.html.')
 p()
-p('Хронология (из RUN_LOG.md):')
-p()
-for line in log.splitlines():
-    if re.match(r'^- \d{4}-\d\d-\d\d', line):
-        p(line)
-p()
+if log:
+    p('Хронология прежних запусков (из RUN_LOG.md):')
+    p()
+    for line in log.splitlines():
+        if re.match(r'^- \d{4}-\d\d-\d\d', line):
+            p(line)
+    p()
 
 # ---- b) files
 p('## b) Файлы')
@@ -196,12 +201,16 @@ logs = sorted(glob.glob('logs/run_*.log'))
 for lf in logs:
     t = open(lf, errors='ignore').read()
     p(f'- {lf}: «terminated with an error» {t.count("terminated with an error")}, «Execution is retried» {t.count("Execution is retried")}')
-p('\nПолный RUN_LOG.md (правки кода, решения):\n')
-p(log)
+if exists('sra_failed.txt'):
+    failed = [l.strip() for l in open(P('sra_failed.txt')) if l.strip()]
+    p(f'- Аккессии SRA, не скачанные после всех попыток: {len(failed)}' + (f' ({", ".join(failed[:20])})' if failed else ''))
+if log:
+    p('\nПолный RUN_LOG.md (история прежних запусков):\n')
+    p(log)
 p()
 p('## h) Нерешённое')
-p('- См. RUN_LOG.md: ключ NCBI_API_KEY не был задан (3 запроса/с), поэтому шаг SRA очень долгий.')
+p('- Без NCBI_API_KEY в окружении NCBI отвечает не быстрее 3 запросов/с, поэтому шаг SRA очень долгий.')
 p('- Счётчики в разделе f — эксперименты (SRX), а не раны.')
-p('- Ноутбуки: выполнение и ошибки отражены в logs/notebooks_*.log.')
+p('- Ноутбуки: выполненные копии в data/executed/; ошибки — в .command.err задач NOTEBOOK (nextflow log).')
 open(args.out, 'w').write('\n'.join(out) + '\n')
 print(f'wrote {args.out} ({len(out)} lines)')

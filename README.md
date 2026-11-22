@@ -20,18 +20,35 @@ The analysis lives in the notebooks (`create` → `analyze` → `visualize`), an
 
 ## Running
 
-The whole data-collection part is one [Nextflow](https://www.nextflow.io/) workflow:
+Everything runs through [Nextflow](https://www.nextflow.io/) (`main.nf`, settings in `nextflow.config`):
 
 ```bash
-nextflow run main.nf --limit 1   # quick test on a single archive
-nextflow run main.nf             # full run (long); add -resume to continue after an interruption
+nextflow run main.nf --limit 1             # quick test on a single archive
+nextflow run main.nf -resume               # full run: collection, then notebooks and RUN_REPORT.md
+nextflow run main.nf --mode analyze        # only notebooks (create -> analyze -> visualize) + RUN_REPORT.md
+nextflow run main.nf --mode reuse_check    # check generator/reuser roles (see below)
 ```
 
-Results appear in `data/`.
+Collection steps that query NCBI run one after another (GEO -> SRA -> SRA re-check -> gold standard), and
+every step is retried by Nextflow; `-resume` continues after an interruption. Results are written to
+`data/`, executed notebooks to `data/executed/`, figures to `figures/`.
 
-After the notebooks, the generator/reuser roles can be checked against GEO's own paper link
-(the PubMed ID stored in each GEO series):
+Setup on a new machine:
 
 ```bash
-nextflow run main.nf --mode reuse_check   # -> data/reuse_check/geo_link_summary.md
-``` Then run the notebooks in `notebooks/` in order. Settings (output folder, number of parallel downloads, skipping steps) are in `nextflow.config`.
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m ipykernel install --user --name reusability-venv   # kernel used by the notebooks
+```
+
+The SRA steps also need NCBI EDirect (`esearch`, `efetch`) in `PATH`; `NCBI_API_KEY` in the environment
+raises the NCBI rate limit from 3 to 10 requests per second.
+
+## Checking generator/reuser roles
+
+`--mode reuse_check` (after a full run):
+
+1. compares the date-based roles with the paper that GEO itself lists for each series
+   (`data/reuse_check/geo_link_summary.md`);
+2. on a stratified sample of pairs, reads the article text (Methods, Data availability, sentences with the
+   accession) with a local LLM (`llm_model` in `nextflow.config`, vLLM image, one GPU) and writes
+   `data/reuse_check/review_summary.md` and `review_todo.csv` — only the pairs a person needs to look at.

@@ -4,6 +4,7 @@ data/
 # Runtime logs and output artifacts
 *.log
 *.txt
+!requirements.txt
 !logs/.gitkeep
 
 # Jupyter checkpoints

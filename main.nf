@@ -94,6 +94,9 @@ process GOLD_STANDARD {
     // pubmed_mappings.tsv: refine.bio RNA-SEQ experiments with PMC IDs (QC reference for create.ipynb).
     publishDir params.outdir, mode: 'copy'
 
+    input:
+    val after   // runs after the SRA steps (NCBI ID Converter)
+
     output:
     path 'pubmed_mappings.tsv'
 
@@ -108,6 +111,7 @@ process SRA_DOWNLOAD {
     // interrupted run continues where it stopped.
     input:
     path matrix
+    val after   // runs after GEO_REFS
 
     output:
     path 'sra_download.done'
@@ -117,6 +121,27 @@ process SRA_DOWNLOAD {
     ${params.python} ${projectDir}/scripts/utils/sra/download_sra.py \\
         --data-dir ${params.outdir} --matrix ${matrix}
     touch sra_download.done
+    """
+}
+
+process SRA_RECHECK {
+    // Throttled esearch calls can record accessions as "no runs" by mistake. Re-check
+    // sra_no_runs.txt, then fetch what turned out to exist and what failed before.
+    // download_sra.py exits non-zero while failures remain; the last attempt accepts them,
+    // they stay listed in outdir/sra_failed.txt and in RUN_REPORT.md.
+    input:
+    path matrix
+    path done_flag
+
+    output:
+    path 'sra_recheck.done'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/recheck_no_runs.py --data-dir ${params.outdir}
+    ${params.python} ${projectDir}/scripts/utils/sra/download_sra.py \\
+        --data-dir ${params.outdir} --matrix ${matrix} || [ ${task.attempt} -ge ${params.sra_attempts} ]
+    touch sra_recheck.done
     """
 }
 
@@ -133,6 +158,61 @@ process SRA_CONCAT {
     """
     ${params.python} ${projectDir}/scripts/concat_sra_runs.py ${params.outdir} sra_complete_runs.csv
     """
+}
+
+process NOTEBOOKS {
+    // create -> analyze -> visualize, one after another; stops at the first one that fails.
+    // The notebooks read ../data and write ../figures relative to notebooks/, so they run there.
+    // Their inputs are not declared, so the result is never taken from the cache.
+    cache false
+    maxRetries 0
+    publishDir "${params.outdir}/executed", mode: 'copy'
+
+    input:
+    val after
+
+    output:
+    path '*.ipynb'
+
+    script:
+    """
+    out=\$PWD
+    cd ${projectDir}/notebooks
+    for nb in create analyze visualize; do
+        echo "notebook \$nb: start \$(date -Is)"
+        ${params.python} -m jupyter nbconvert --to notebook --execute \$nb.ipynb \\
+            --output-dir \$out --ExecutePreprocessor.kernel_name=${params.kernel} \\
+            --ExecutePreprocessor.timeout=-1
+        echo "notebook \$nb: done \$(date -Is)"
+    done
+    """
+}
+
+process REPORT {
+    cache false
+    maxRetries 0
+
+    input:
+    val after
+
+    output:
+    path 'report.done'
+
+    script:
+    """
+    cd ${projectDir}
+    ${params.python} scripts/make_run_report.py --data-dir ${params.outdir} --out RUN_REPORT.md \\
+        --nextflow-version ${nextflow.version}
+    cd - > /dev/null
+    touch report.done
+    """
+}
+
+workflow ANALYZE {
+    take:
+    after   // emits once the data are ready
+    main:
+    REPORT(NOTEBOOKS(after).collect())
 }
 
 process PMC_TO_PMID {
@@ -213,13 +293,14 @@ process LLM_CLASSIFY {
 
     input:
     path contexts
+    path classifier   // the script itself: the container sees only the task directory
 
     output:
     path 'labels.jsonl'
 
     script:
     """
-    python3 ${projectDir}/scripts/reuse_check/llm_classify.py \\
+    python3 ${classifier} \\
         --contexts ${contexts} --model ${params.llm_model} --revision ${params.llm_revision} --out labels.jsonl
     """
 }
@@ -252,7 +333,7 @@ workflow REUSE_CHECK {
     if (!params.skip_text_check) {
         pairs    = SELECT_PAIRS(GEO_LINK_EVAL.out[0], matrix)
         contexts = FETCH_CONTEXT(pairs)
-        labels   = LLM_CLASSIFY(contexts)
+        labels   = LLM_CLASSIFY(contexts, file("${projectDir}/scripts/reuse_check/llm_classify.py"))
         MAKE_REVIEW(pairs, contexts, labels)
     }
 }
@@ -266,30 +347,41 @@ workflow COLLECT {
         PARSE_ARCHIVE.out.matrix.collect().map { ['pre_filter_matrix.csv', it] }
             .mix(PARSE_ARCHIVE.out.dates.collect().map { ['pre_filter_dates.csv', it] })
     )
-    matrix = merged.filter { it.name == 'pre_filter_matrix.csv' }
+    matrix = merged.filter { it.name == 'pre_filter_matrix.csv' }.first()
 
-    // 2. GEO reference tables
-    if (!params.skip_geo) {
-        GEO_REFS()
+    // 2.-4. NCBI steps in a chain: GEO -> SRA -> SRA recheck -> gold standard
+    if (params.skip_geo) {
+        geo_done = Channel.value('skipped')
+    } else {
+        geo_done = GEO_REFS()[0].map { 'done' }
+    }
+    if (params.skip_sra) {
+        sra_done = geo_done
+    } else {
+        dl       = SRA_DOWNLOAD(matrix, geo_done)
+        rechk    = SRA_RECHECK(matrix, dl)
+        sra_done = SRA_CONCAT(rechk).map { 'done' }
+    }
+    if (params.skip_gold) {
+        gold_done = sra_done
+    } else {
+        gold_done = GOLD_STANDARD(sra_done).map { 'done' }
     }
 
-    // 3. Gold standard for the QC step in the notebooks
-    if (!params.skip_gold) {
-        GOLD_STANDARD()
-    }
-
-    // 4. SRA runs for every accession found
-    if (!params.skip_sra) {
-        SRA_CONCAT(SRA_DOWNLOAD(matrix))
+    // 5. notebooks and RUN_REPORT.md
+    if (!params.skip_analyze) {
+        ANALYZE(gold_done)
     }
 }
 
 workflow {
     if (params.mode == 'collect') {
         COLLECT()
+    } else if (params.mode == 'analyze') {
+        ANALYZE(Channel.value('existing data'))
     } else if (params.mode == 'reuse_check') {
         REUSE_CHECK()
     } else {
-        error "Unknown --mode '${params.mode}' (use collect or reuse_check)"
+        error "Unknown --mode '${params.mode}' (use collect, analyze or reuse_check)"
     }
 }
