@@ -37,9 +37,11 @@ args = ap.parse_args()
 
 cache = Path(args.cache_dir)
 cache.mkdir(parents=True, exist_ok=True)
-s = requests.Session()
-s.mount('https://', HTTPAdapter(max_retries=Retry(total=4, backoff_factor=2,
-                                                  status_forcelist=[429, 500, 502, 503, 504])))
+# Europe PMC often answers 500 for articles it cannot render; one quick try, then NCBI (with retries).
+epmc = requests.Session()
+ncbi = requests.Session()
+ncbi.mount('https://', HTTPAdapter(max_retries=Retry(total=4, backoff_factor=2,
+                                                     status_forcelist=[429, 500, 502, 503, 504])))
 
 
 def get_xml(pmc):
@@ -48,14 +50,14 @@ def get_xml(pmc):
         if f.exists() and f.stat().st_size > 0:
             return src, f.read_bytes()
     try:
-        r = s.get(EPMC.format(pmc=pmc), timeout=60)
+        r = epmc.get(EPMC.format(pmc=pmc), timeout=30)
         if r.ok and b'<body' in r.content:
             (cache / f'{pmc}.europepmc.xml').write_bytes(r.content)
             return 'europepmc', r.content
     except requests.RequestException:
         pass
     try:
-        r = s.get(NCBI, params={'db': 'pmc', 'id': pmc.removeprefix('PMC'), 'retmode': 'xml',
+        r = ncbi.get(NCBI, params={'db': 'pmc', 'id': pmc.removeprefix('PMC'), 'retmode': 'xml',
                                 'tool': 'reusability', 'email': 'drabcinski@gmail.com'}, timeout=60)
         time.sleep(0.35)
         if r.ok and b'<body' in r.content:
