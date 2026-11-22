@@ -13,7 +13,12 @@ nextflow.enable.dsl = 2
  *   refine.bio gold standard ──> pubmed_mappings.tsv (independent of the above)
  *
  * Results go to params.outdir (default ./data) with the names the notebooks expect.
+ * Reuse check (--mode reuse_check): verify the date-based G/R roles against GEO's own paper link
+ *   metadata_matrix_filtered.csv ──> PMC→PMID ──> geo_link_pairs.csv.gz + geo_link_summary.md
+ *   (results in params.outdir/reuse_check; needs the collection run and the notebooks first)
+ *
  * Run:     nextflow run main.nf
+ *          nextflow run main.nf --mode reuse_check
  * Test:    nextflow run main.nf --limit 1
  * Resume:  nextflow run main.nf -resume
  */
@@ -128,7 +133,50 @@ process SRA_CONCAT {
     """
 }
 
-workflow {
+process PMC_TO_PMID {
+    // PMC -> PubMed ID via the NCBI ID Converter. Stable mapping, so it is stored, not recomputed.
+    storeDir "${params.outdir}/reuse_check"
+    maxRetries 5
+
+    input:
+    path matrix
+
+    output:
+    path 'pmc_pmid.csv'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/pmc_to_pmid.py \\
+        --matrix ${matrix} --repository GEO --out pmc_pmid.csv
+    """
+}
+
+process GEO_LINK_EVAL {
+    publishDir "${params.outdir}/reuse_check", mode: 'copy'
+
+    input:
+    path matrix
+    path geo_series
+    path pmc_pmid
+
+    output:
+    path 'geo_link_pairs.csv.gz'
+    path 'geo_link_summary.md'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/geo_link_eval.py \\
+        --matrix ${matrix} --geo-series ${geo_series} --pmc-pmid ${pmc_pmid}
+    """
+}
+
+workflow REUSE_CHECK {
+    matrix     = file("${params.outdir}/metadata_matrix_filtered.csv", checkIfExists: true)
+    geo_series = file("${params.outdir}/geo_series.csv", checkIfExists: true)
+    GEO_LINK_EVAL(matrix, geo_series, PMC_TO_PMID(matrix))
+}
+
+workflow COLLECT {
     // 1. publications -> accessions + dates
     names = LIST_ARCHIVES().splitText { it.trim() }.filter { it }
     PARSE_ARCHIVE(names)
@@ -152,5 +200,15 @@ workflow {
     // 4. SRA runs for every accession found
     if (!params.skip_sra) {
         SRA_CONCAT(SRA_DOWNLOAD(matrix))
+    }
+}
+
+workflow {
+    if (params.mode == 'collect') {
+        COLLECT()
+    } else if (params.mode == 'reuse_check') {
+        REUSE_CHECK()
+    } else {
+        error "Unknown --mode '${params.mode}' (use collect or reuse_check)"
     }
 }

@@ -27,4 +27,11 @@ nextflow run main.nf --limit 1   # quick test on a single archive
 nextflow run main.nf             # full run (long); add -resume to continue after an interruption
 ```
 
-Results appear in `data/`. Then run the notebooks in `notebooks/` in order. Settings (output folder, number of parallel downloads, skipping steps) are in `nextflow.config`.
+Results appear in `data/`.
+
+After the notebooks, the generator/reuser roles can be checked against GEO's own paper link
+(the PubMed ID stored in each GEO series):
+
+```bash
+nextflow run main.nf --mode reuse_check   # -> data/reuse_check/geo_link_summary.md
+``` Then run the notebooks in `notebooks/` in order. Settings (output folder, number of parallel downloads, skipping steps) are in `nextflow.config`.
