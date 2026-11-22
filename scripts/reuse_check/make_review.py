@@ -76,7 +76,7 @@ for c in ('human_role', 'human_note'):
     df[c] = ''
 
 keep = ['stratum', 'review_reason', 'pmc_ID', 'accession', 'url', 'reuse_role', 'link_status', 'role',
-        'confidence', 'data_taken', 'id_source_mismatch', 'same_group_earlier', 'evidence_quote',
+        'confidence', 'data_taken', 'id_source_mismatch', 'same_group_earlier', 'evidence_quote', 'rationale',
         'quote_found', 'human_role', 'human_note']
 df.drop(columns=['context']).to_csv('review_all.csv', index=False)
 todo = df[df['review_reason'].ne('') & df['review_reason'].ne('no_full_text')][keep]

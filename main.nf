@@ -220,7 +220,7 @@ process LLM_CLASSIFY {
     script:
     """
     python3 ${projectDir}/scripts/reuse_check/llm_classify.py \\
-        --contexts ${contexts} --model ${params.llm_model} --out labels.jsonl
+        --contexts ${contexts} --model ${params.llm_model} --revision ${params.llm_revision} --out labels.jsonl
     """
 }
 
