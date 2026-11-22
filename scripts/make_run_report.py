@@ -154,7 +154,7 @@ else:
     p(md(pv.reset_index()))
     p('\n**Топ-10 ScientificName:**\n')
     p(md(sra.ScientificName.value_counts().head(10).rename('ранов').reset_index()))
-    g = (sra.bases / 1e9).groupby(sra.LibraryStrategy)
+    g = (pd.to_numeric(sra.bases, errors='coerce') / 1e9).groupby(sra.LibraryStrategy)  # column has non-numeric values
     q = pd.DataFrame({'медиана ГБ': g.median(), 'P90 ГБ': g.quantile(0.9)}).loc[[s for s in top15 if s in g.groups]].round(3)
     p('\n**bases (ГБ): медиана и P90, топ-15 стратегий:**\n')
     p(md(q.reset_index()))

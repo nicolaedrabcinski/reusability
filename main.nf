@@ -165,7 +165,6 @@ process NOTEBOOKS {
     // The notebooks read ../data and write ../figures relative to notebooks/, so they run there.
     // Their inputs are not declared, so the result is never taken from the cache.
     cache false
-    maxRetries 0
     publishDir "${params.outdir}/executed", mode: 'copy'
 
     input:
@@ -190,7 +189,6 @@ process NOTEBOOKS {
 
 process REPORT {
     cache false
-    maxRetries 0
 
     input:
     val after
@@ -218,7 +216,6 @@ workflow ANALYZE {
 process PMC_TO_PMID {
     // PMC -> PubMed ID via the NCBI ID Converter. Stable mapping, so it is stored, not recomputed.
     storeDir "${params.outdir}/reuse_check"
-    maxRetries 5
 
     input:
     path matrix
@@ -289,7 +286,6 @@ process FETCH_CONTEXT {
 process LLM_CLASSIFY {
     // Local model on the GPU, inside the vLLM image (see nextflow.config, withName: LLM_CLASSIFY).
     publishDir "${params.outdir}/reuse_check", mode: 'copy'
-    maxRetries 1
 
     input:
     path contexts
