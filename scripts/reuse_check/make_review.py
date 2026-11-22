@@ -29,6 +29,10 @@ pairs = pd.read_csv(args.pairs, dtype=str)
 ctx = pd.DataFrame([json.loads(x) for x in open(args.contexts)])
 lab = pd.DataFrame([json.loads(x) for x in open(args.labels)])
 df = pairs.merge(ctx, on=['pmc_ID', 'accession'], how='left').merge(lab, on=['pmc_ID', 'accession'], how='left')
+for c in ('evidence_quote', 'rationale', 'parse_error', 'raw_answer', 'confidence', 'data_taken',
+          'id_source_mismatch', 'same_group_earlier', 'model'):
+    if c not in df:
+        df[c] = pd.NA
 
 
 def norm(t):
@@ -52,6 +56,8 @@ def reasons(r):
     out = []
     if r.text_source == 'none':
         out.append('no_full_text')
+    if isinstance(r.get('parse_error'), str):
+        out.append('model_answer_invalid')
     if r.agrees_with_reference is not None and not r.agrees_with_reference:
         out.append('model_vs_geo_link')
     if r.text_source != 'none' and (r.role == 'unclear' or r.confidence == 'low'):
@@ -77,7 +83,7 @@ for c in ('human_role', 'human_note'):
 
 keep = ['stratum', 'review_reason', 'pmc_ID', 'accession', 'url', 'reuse_role', 'link_status', 'role',
         'confidence', 'data_taken', 'id_source_mismatch', 'same_group_earlier', 'evidence_quote', 'rationale',
-        'quote_found', 'human_role', 'human_note']
+        'quote_found', 'parse_error', 'human_role', 'human_note']
 df.drop(columns=['context']).to_csv('review_all.csv', index=False)
 todo = df[df['review_reason'].ne('') & df['review_reason'].ne('no_full_text')][keep]
 todo.to_csv('review_todo.csv', index=False)
@@ -96,6 +102,7 @@ lines += ['', '## Model role by stratum', '', '```', pd.crosstab(df.stratum, df.
           f'- pairs without full text: {(df.text_source == "none").sum()} of {len(df)}',
           f'- accession not found in the text: {(df.n_mentions.fillna(0).astype(int) == 0).sum()}',
           f'- evidence quote not found verbatim (model answered): {((~df.quote_found) & df.role.ne("unclear") & df.text_source.ne("none")).sum()}',
+          f'- model answers that failed validation: {df["parse_error"].notna().sum()}',
           f'- id_source_mismatch flagged: {df.id_source_mismatch.map(is_true).sum()}',
           f'- data_taken: {df.data_taken.value_counts().to_dict()}', '',
           f'## To review by a person: {len(todo)} pairs (review_todo.csv)', '',

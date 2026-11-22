@@ -1,4 +1,8 @@
-"""Label each (paper, accession) excerpt with a local LLM (vLLM offline, JSON-schema constrained).
+"""Label each (paper, accession) excerpt with a local LLM (vLLM offline).
+
+The model answers free text with a JSON object; the answer is then validated against SCHEMA here.
+Constrained (guided) decoding is NOT used: with vLLM 0.9.0 + Qwen3 it produced invented quotes,
+while the same prompt without constraints quoted the excerpts verbatim (checked 2026-11-22).
 
 Runs inside the vllm/vllm-openai image; uses only the standard library and vllm.
 Input: contexts.jsonl (fetch_context.py). Output: labels.jsonl with the fields of SCHEMA plus pmc_ID,
@@ -8,7 +12,7 @@ import argparse
 import json
 
 from vllm import LLM, SamplingParams
-from vllm.sampling_params import GuidedDecodingParams
+import re
 
 SYSTEM = """You annotate biomedical research articles. You get excerpts from ONE article and ONE dataset accession, and you decide what the article did with that dataset. Base every answer only on the excerpts.
 
@@ -85,15 +89,37 @@ if args.debug:
               '\nFREE ANSWER:\n', o.outputs[0].text)
     raise SystemExit(0)
 
-sp = SamplingParams(temperature=0.0, max_tokens=600, guided_decoding=GuidedDecodingParams(json=SCHEMA))
+def validate(text):
+    """Return (label dict, error or None). Takes the outermost {...} of the answer."""
+    m = re.search(r'\{.*\}', text, re.S)
+    if not m:
+        return None, 'no JSON object'
+    try:
+        lab = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        return None, f'invalid JSON: {e}'
+    for k, spec in SCHEMA['properties'].items():
+        if k not in lab:
+            return None, f'missing {k}'
+        v = lab[k]
+        if 'enum' in spec and v not in spec['enum']:
+            return None, f'{k}={v!r} not allowed'
+        if spec.get('type') == 'boolean' and not isinstance(v, bool):
+            return None, f'{k} not boolean'
+        if spec.get('type') == 'string' and not isinstance(v, str):
+            return None, f'{k} not a string'
+    return {k: lab[k] for k in SCHEMA['properties']}, None
+
+
+sp = SamplingParams(temperature=0.0, max_tokens=600)
 outs = llm.generate([prompt(it) for it in todo], sp)
 
-labels = {}
+labels, n_bad = {}, 0
 for it, o in zip(todo, outs):
-    try:
-        lab = json.loads(o.outputs[0].text)
-    except json.JSONDecodeError:
-        lab = {'role': 'unclear', 'parse_error': o.outputs[0].text[:200]}
+    lab, err = validate(o.outputs[0].text)
+    if err:
+        n_bad += 1
+        lab = {'role': 'unclear', 'parse_error': err, 'raw_answer': o.outputs[0].text[:500]}
     labels[(it['pmc_ID'], it['accession'])] = lab
 
 with open(args.out, 'w') as fo:
@@ -101,4 +127,4 @@ with open(args.out, 'w') as fo:
         lab = labels.get((it['pmc_ID'], it['accession']), {'role': 'unclear', 'no_text': True})
         fo.write(json.dumps({'pmc_ID': it['pmc_ID'], 'accession': it['accession'], 'model': args.model,
                              **lab}, ensure_ascii=False) + '\n')
-print(f'labelled {len(todo)} pairs with the model, {len(items) - len(todo)} without text')
+print(f'labelled {len(todo)} pairs with the model ({n_bad} answers failed validation), {len(items) - len(todo)} without text')
