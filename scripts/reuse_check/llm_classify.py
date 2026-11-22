@@ -58,6 +58,8 @@ ap.add_argument('--model', required=True)
 ap.add_argument('--revision', default=None, help='model commit on Hugging Face (pinned for reproducibility)')
 ap.add_argument('--max-model-len', type=int, default=8192)
 ap.add_argument('--out', default='labels.jsonl')
+ap.add_argument('--debug', type=int, default=0,
+                help='print the first N prompts and free (unconstrained) answers, then exit')
 args = ap.parse_args()
 
 items = [json.loads(line) for line in open(args.contexts)]
@@ -73,6 +75,15 @@ def prompt(it):
     return tok.apply_chat_template([{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': user}],
                                    tokenize=False, add_generation_prompt=True, enable_thinking=False)
 
+
+if args.debug:
+    sub = todo[:args.debug]
+    free = llm.generate([prompt(it) for it in sub], SamplingParams(temperature=0.0, max_tokens=600))
+    for it, o in zip(sub, free):
+        p = prompt(it)
+        print('=' * 80, '\nPROMPT TOKENS:', len(tok(p)['input_ids']), '\nPROMPT TAIL:\n', p[-1500:],
+              '\nFREE ANSWER:\n', o.outputs[0].text)
+    raise SystemExit(0)
 
 sp = SamplingParams(temperature=0.0, max_tokens=600, guided_decoding=GuidedDecodingParams(json=SCHEMA))
 outs = llm.generate([prompt(it) for it in todo], sp)
