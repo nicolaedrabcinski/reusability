@@ -1,6 +1,8 @@
 """Fetch full text for each paper in pairs.csv and build the excerpt the model reads for each pair.
 
-Full text: Europe PMC fullTextXML, falling back to NCBI efetch (db=pmc) when Europe PMC fails.
+Full text: NCBI efetch (db=pmc) first — the corpus comes from the PMC open-access subset, and NCBI
+answers in under a second — then Europe PMC fullTextXML as a fallback (it answers HTTP 500 or hangs
+for many articles). NCBI_API_KEY from the environment raises the NCBI rate limit.
 Raw XML is cached in --cache-dir, so reruns do not hit the APIs again.
 
 Excerpt per pair (at most --max-chars):
@@ -11,6 +13,7 @@ Output: contexts.jsonl, one JSON object per pair:
 """
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -37,32 +40,39 @@ args = ap.parse_args()
 
 cache = Path(args.cache_dir)
 cache.mkdir(parents=True, exist_ok=True)
-# Europe PMC often answers 500 for articles it cannot render; one quick try, then NCBI (with retries).
+# NCBI with retries; Europe PMC only as a quick fallback.
 epmc = requests.Session()
 ncbi = requests.Session()
 ncbi.mount('https://', HTTPAdapter(max_retries=Retry(total=4, backoff_factor=2,
                                                      status_forcelist=[429, 500, 502, 503, 504])))
 
 
+API_KEY = os.environ.get('NCBI_API_KEY', '')
+NCBI_PAUSE = 0.11 if API_KEY else 0.35   # 10 or 3 requests per second
+
+
 def get_xml(pmc):
-    for src in ('europepmc', 'ncbi'):
+    for src in ('ncbi', 'europepmc'):
         f = cache / f'{pmc}.{src}.xml'
         if f.exists() and f.stat().st_size > 0:
             return src, f.read_bytes()
+    params = {'db': 'pmc', 'id': pmc.removeprefix('PMC'), 'retmode': 'xml',
+              'tool': 'reusability', 'email': 'drabcinski@gmail.com'}
+    if API_KEY:
+        params['api_key'] = API_KEY
     try:
-        r = epmc.get(EPMC.format(pmc=pmc), timeout=30)
-        if r.ok and b'<body' in r.content:
-            (cache / f'{pmc}.europepmc.xml').write_bytes(r.content)
-            return 'europepmc', r.content
-    except requests.RequestException:
-        pass
-    try:
-        r = ncbi.get(NCBI, params={'db': 'pmc', 'id': pmc.removeprefix('PMC'), 'retmode': 'xml',
-                                'tool': 'reusability', 'email': 'drabcinski@gmail.com'}, timeout=60)
-        time.sleep(0.35)
+        r = ncbi.get(NCBI, params=params, timeout=60)
+        time.sleep(NCBI_PAUSE)
         if r.ok and b'<body' in r.content:
             (cache / f'{pmc}.ncbi.xml').write_bytes(r.content)
             return 'ncbi', r.content
+    except requests.RequestException:
+        pass
+    try:
+        r = epmc.get(EPMC.format(pmc=pmc), timeout=15)
+        if r.ok and b'<body' in r.content:
+            (cache / f'{pmc}.europepmc.xml').write_bytes(r.content)
+            return 'europepmc', r.content
     except requests.RequestException:
         pass
     return 'none', None
@@ -102,8 +112,6 @@ with open(args.out, 'w') as fo:
         if r.pmc_ID not in done_pmc:
             src, xml = get_xml(r.pmc_ID)
             done_pmc[r.pmc_ID] = (src, paragraphs(xml) if xml else [])
-            if src == 'europepmc':
-                time.sleep(0.2)
         src, paras = done_pmc[r.pmc_ID]
         keys = {k for k in (r.accession, r.converted_accession) if isinstance(k, str) and k}
         hit = [(sec, t) for sec, t in paras if any(k in t for k in keys)]
