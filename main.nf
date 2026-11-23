@@ -253,7 +253,7 @@ process GEO_LINK_EVAL {
 process SELECT_PAIRS {
     // sample: --text_check_n pairs per stratum, one chunk. all: every pair, most informative first,
     // in chunks of --text_check_chunk pairs that never split a paper.
-    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}", mode: 'copy', pattern: 'pairs.csv'
+    publishDir "${params.reuse_check_dir}/${params.text_check_scope}", mode: 'copy', pattern: 'pairs.csv'
 
     input:
     path geo_pairs
@@ -271,46 +271,8 @@ process SELECT_PAIRS {
     """
 }
 
-process FETCH_CONTEXT {
-    // NCBI / Europe PMC are rate-limited: one chunk at a time (maxForks in nextflow.config).
-    // It runs while the model works on the previous chunk. Raw XML is cached in outdir.
-    tag "$chunk.baseName"
-
-    input:
-    path chunk
-
-    output:
-    tuple val(chunk.baseName), path("${chunk.baseName}.contexts.jsonl")
-
-    script:
-    """
-    ${params.python} ${projectDir}/scripts/reuse_check/fetch_context.py \\
-        --pairs ${chunk} --cache-dir ${params.outdir}/reuse_check/xml_cache --out ${chunk.baseName}.contexts.jsonl
-    """
-}
-
-process LLM_CLASSIFY {
-    // Local model on the GPU, inside the vLLM image (see nextflow.config, withName: LLM_CLASSIFY).
-    tag "$name"
-    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}/labels", mode: 'copy'
-
-    input:
-    tuple val(name), path(contexts)
-    path classifier   // the script itself: the container sees only the task directory
-
-    output:
-    path "${name}.labels.jsonl"
-
-    script:
-    """
-    python3 ${classifier} \\
-        --contexts ${contexts} --model ${params.llm_model} --revision ${params.llm_revision} \\
-        --out ${name}.labels.jsonl
-    """
-}
-
 process MAKE_REVIEW {
-    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}", mode: 'copy'
+    publishDir "${params.reuse_check_dir}/${params.text_check_scope}", mode: 'copy'
 
     input:
     path pairs
@@ -326,6 +288,22 @@ process MAKE_REVIEW {
     ${params.python} ${projectDir}/scripts/reuse_check/make_review.py \\
         --pairs ${pairs} --labels ${labels} --seed ${params.seed}
     """
+
+    stub:
+    """
+    touch labels_all.csv.gz review_todo.csv review_summary.md
+    """
+}
+
+include { FETCH_CONTEXT as FETCH_1; LLM_CLASSIFY as LLM_1 } from './modules/reuse_check.nf'
+include { FETCH_CONTEXT as FETCH_2; LLM_CLASSIFY as LLM_2 } from './modules/reuse_check.nf'
+include { FETCH_CONTEXT as FETCH_3; LLM_CLASSIFY as LLM_3 } from './modules/reuse_check.nf'
+
+def chunkNumber(f) { (f.name =~ /chunk_(\d+)/)[0][1] as int }
+
+def inRange(n, range) {   // range: "8-16"
+    def (lo, hi) = range.tokenize('-')*.toInteger()
+    n >= lo && n <= hi
 }
 
 workflow REUSE_CHECK {
@@ -335,11 +313,22 @@ workflow REUSE_CHECK {
 
     if (!params.skip_text_check) {
         SELECT_PAIRS(GEO_LINK_EVAL.out[0], matrix)
-        // chunk_0001 first: most informative pairs; FETCH_CONTEXT and LLM_CLASSIFY take them in this order
-        chunks   = SELECT_PAIRS.out.chunks.flatten().toSortedList { a, b -> a.name <=> b.name }.flatMap()
-        contexts = FETCH_CONTEXT(chunks)
-        labels   = LLM_CLASSIFY(contexts, file("${projectDir}/scripts/reuse_check/llm_classify.py"))
-        MAKE_REVIEW(SELECT_PAIRS.out.pairs, labels.collect())
+        // Nextflow does not keep the order of a process's tasks, so the chunks run in phases
+        // (--text_check_phases, chunk numbers): disagreements first, then SRA, then agreements.
+        // A phase's model waits for the previous phase's model; its texts wait only for the previous texts.
+        def (p1, p2, p3) = params.text_check_phases.tokenize(',')
+        chunks = SELECT_PAIRS.out.chunks.flatten()
+        clf    = file("${projectDir}/scripts/reuse_check/llm_classify.py")
+        go     = Channel.value('start')
+
+        c1 = FETCH_1(chunks.filter { inRange(chunkNumber(it), p1) }, go)
+        l1 = LLM_1(c1, clf, go)
+        c2 = FETCH_2(chunks.filter { inRange(chunkNumber(it), p2) }, c1.collect().map { 'done' })
+        l2 = LLM_2(c2, clf, l1.collect().map { 'done' })
+        c3 = FETCH_3(chunks.filter { inRange(chunkNumber(it), p3) }, c2.collect().map { 'done' })
+        l3 = LLM_3(c3, clf, l2.collect().map { 'done' })
+
+        MAKE_REVIEW(SELECT_PAIRS.out.pairs, l1.mix(l2, l3).collect())
     }
 }
 
