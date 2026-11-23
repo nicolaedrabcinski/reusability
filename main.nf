@@ -15,8 +15,9 @@ nextflow.enable.dsl = 2
  * Results go to params.outdir (default ./data) with the names the notebooks expect.
  * Reuse check (--mode reuse_check): verify the date-based G/R roles against GEO's own paper link
  *   metadata_matrix_filtered.csv ──> PMC→PMID ──> geo_link_pairs.csv.gz + geo_link_summary.md
- *   then a text check on a stratified sample: pairs ──> full-text excerpts ──> local LLM (vLLM, GPU)
- *     ──> review_summary.md + review_todo.csv (only the pairs a person needs to look at)
+ *   then a text check (--text_check_scope sample | all): pairs in chunks ──> full-text excerpts
+ *     ──> local LLM (vLLM, GPU) ──> labels_all.csv.gz, review_summary.md, review_todo.csv
+ *     (results in params.outdir/reuse_check/<scope>/)
  *   (results in params.outdir/reuse_check; needs the collection run and the notebooks first)
  *
  * Run:     nextflow run main.nf
@@ -250,74 +251,80 @@ process GEO_LINK_EVAL {
 }
 
 process SELECT_PAIRS {
-    publishDir "${params.outdir}/reuse_check", mode: 'copy'
+    // sample: --text_check_n pairs per stratum, one chunk. all: every pair, most informative first,
+    // in chunks of --text_check_chunk pairs that never split a paper.
+    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}", mode: 'copy', pattern: 'pairs.csv'
 
     input:
     path geo_pairs
     path matrix
 
     output:
-    path 'pairs.csv'
+    path 'pairs.csv',     emit: pairs
+    path 'chunk_*.csv',   emit: chunks
 
     script:
     """
     ${params.python} ${projectDir}/scripts/reuse_check/select_pairs.py \\
-        --geo-pairs ${geo_pairs} --matrix ${matrix} --n ${params.text_check_n} --seed ${params.seed}
+        --geo-pairs ${geo_pairs} --matrix ${matrix} --scope ${params.text_check_scope} \\
+        --n ${params.text_check_n} --chunk-size ${params.text_check_chunk} --seed ${params.seed}
     """
 }
 
 process FETCH_CONTEXT {
-    // One task (Europe PMC / NCBI are rate-limited). Raw XML is cached in outdir, reruns are cheap.
-    publishDir "${params.outdir}/reuse_check", mode: 'copy'
+    // NCBI / Europe PMC are rate-limited: one chunk at a time (maxForks in nextflow.config).
+    // It runs while the model works on the previous chunk. Raw XML is cached in outdir.
+    tag "$chunk.baseName"
 
     input:
-    path pairs
+    path chunk
 
     output:
-    path 'contexts.jsonl'
+    tuple val(chunk.baseName), path("${chunk.baseName}.contexts.jsonl")
 
     script:
     """
     ${params.python} ${projectDir}/scripts/reuse_check/fetch_context.py \\
-        --pairs ${pairs} --cache-dir ${params.outdir}/reuse_check/xml_cache
+        --pairs ${chunk} --cache-dir ${params.outdir}/reuse_check/xml_cache --out ${chunk.baseName}.contexts.jsonl
     """
 }
 
 process LLM_CLASSIFY {
     // Local model on the GPU, inside the vLLM image (see nextflow.config, withName: LLM_CLASSIFY).
-    publishDir "${params.outdir}/reuse_check", mode: 'copy'
+    tag "$name"
+    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}/labels", mode: 'copy'
 
     input:
-    path contexts
+    tuple val(name), path(contexts)
     path classifier   // the script itself: the container sees only the task directory
 
     output:
-    path 'labels.jsonl'
+    path "${name}.labels.jsonl"
 
     script:
     """
     python3 ${classifier} \\
-        --contexts ${contexts} --model ${params.llm_model} --revision ${params.llm_revision} --out labels.jsonl
+        --contexts ${contexts} --model ${params.llm_model} --revision ${params.llm_revision} \\
+        --out ${name}.labels.jsonl
     """
 }
 
 process MAKE_REVIEW {
-    publishDir "${params.outdir}/reuse_check", mode: 'copy'
+    publishDir "${params.outdir}/reuse_check/${params.text_check_scope}", mode: 'copy'
 
     input:
     path pairs
-    path contexts
-    path labels
+    path labels   // all chunks
 
     output:
-    path 'review_all.csv'
+    path 'labels_all.csv.gz'
     path 'review_todo.csv'
     path 'review_summary.md'
 
     script:
     """
     ${params.python} ${projectDir}/scripts/reuse_check/make_review.py \\
-        --pairs ${pairs} --contexts ${contexts} --labels ${labels} --seed ${params.seed}
+        --pairs ${pairs} --labels ${labels} --seed ${params.seed}
     """
 }
 
@@ -327,10 +334,11 @@ workflow REUSE_CHECK {
     GEO_LINK_EVAL(matrix, geo_series, PMC_TO_PMID(matrix))
 
     if (!params.skip_text_check) {
-        pairs    = SELECT_PAIRS(GEO_LINK_EVAL.out[0], matrix)
-        contexts = FETCH_CONTEXT(pairs)
+        SELECT_PAIRS(GEO_LINK_EVAL.out[0], matrix)
+        chunks   = SELECT_PAIRS.out.chunks.flatten()
+        contexts = FETCH_CONTEXT(chunks)
         labels   = LLM_CLASSIFY(contexts, file("${projectDir}/scripts/reuse_check/llm_classify.py"))
-        MAKE_REVIEW(pairs, contexts, labels)
+        MAKE_REVIEW(SELECT_PAIRS.out.pairs, labels.collect())
     }
 }
 

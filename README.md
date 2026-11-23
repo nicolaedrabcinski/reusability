@@ -49,6 +49,11 @@ raises the NCBI rate limit from 3 to 10 requests per second.
 
 1. compares the date-based roles with the paper that GEO itself lists for each series
    (`data/reuse_check/geo_link_summary.md`);
-2. on a stratified sample of pairs, reads the article text (Methods, Data availability, sentences with the
-   accession) with a local LLM (`llm_model` in `nextflow.config`, vLLM image, one GPU) and writes
-   `data/reuse_check/review_summary.md` and `review_todo.csv` — only the pairs a person needs to look at.
+2. reads the article text (Methods, Data availability, paragraphs with the accession) with a local LLM
+   (`llm_model` in `nextflow.config`, vLLM image, one GPU) and writes `labels_all.csv.gz`,
+   `review_summary.md` and `review_todo.csv` (only the pairs a person needs to look at) to
+   `data/reuse_check/<scope>/`. `--text_check_scope sample` (default) takes 40 pairs per stratum;
+   `--text_check_scope all` takes every pair, most informative first, in chunks of 20,000 pairs
+   (one task each, so `-resume` continues after an interruption). Whether the cited GEO/SRA accession
+   matches where the data were taken from (raw reads vs processed GEO tables) is decided by rules on
+   the paragraphs that mention the accession, not by the model.

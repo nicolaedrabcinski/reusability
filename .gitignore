@@ -24,6 +24,7 @@ venv/
 work/
 .nextflow/
 .nextflow.log*
+.nextflow.pid
 
 # Run artifacts (per-machine)
 RUN_LOG.md
