@@ -39,7 +39,7 @@ METHODS_RE = re.compile(r'method|material|procedure|availab|accession|deposit|da
 SOURCE_RE = re.compile(r'\b(GEO|SRA|ENA|ArrayExpress|download|deposit|obtain|retriev|public|accession|'
                        r'previously (published|described|reported)|re-?analy|re-?process|FASTQ|raw)', re.I)
 RAW_RE = re.compile(r'\bfastq\b|fasterq-dump|fastq-dump|\bprefetch\b|sra[- ]?toolkit|raw (sequencing )?reads|'
-                    r'\b[SED]RR\d{5,}\b|re-?align|aligned (to|with|using)|mapped (to|with|using)|\bSTAR\b|'
+                    r'\b[SED]RR\d{5,}\b|re-?align|aligned (to|with|using)|mapped (to|with|using)|\bSTAR\b(?![ -]?Methods)|'
                     r'HISAT2?|Bowtie2?|\bBWA\b|kallisto|\bsalmon\b|featureCounts|HTSeq|Cell ?Ranger|'
                     r'Trimmomatic|cutadapt|fastp\b', re.I)
 PROC_RE = re.compile(r'series[_ ]matrix|GEO2R|GEOquery|getGEO|normali[sz]ed (data|expression|matrix|counts?)|'
