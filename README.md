@@ -45,6 +45,15 @@ raises the NCBI rate limit from 3 to 10 requests per second.
 
 ## Checking generator/reuser roles
 
+`--mode reuse_lca` (after `--mode reuse_check --text_check_scope all` has written `pairs.csv`) checks the
+roles without manual labels: for every pair it collects independent signals — the date heuristic, the
+repository's own paper link (GEO series PubMed IDs; SRA `Study_Pubmed_id` and BioProject → PubMed),
+whether someone named in the GEO series is an author of the paper, and the model labels that exist so
+far — and fits a latent class model (Dawid–Skene / Hui–Walter). It reports how often each signal is
+right, with bootstrap intervals, a probability per pair, and a check of the independence assumption
+(`data/reuse_check/lca/lca_summary.md`). Rerun it as the text check finishes more chunks.
+
+
 `--mode reuse_check` (after a full run):
 
 1. compares the date-based roles with the paper that GEO itself lists for each series

@@ -20,6 +20,11 @@ nextflow.enable.dsl = 2
  *     (results in params.outdir/reuse_check/<scope>/)
  *   (results in params.outdir/reuse_check; needs the collection run and the notebooks first)
  *
+ * Latent class check (--mode reuse_lca): independent signals for every pair of the text check
+ *   (repository paper links, GEO series people vs PubMed authors, date heuristic, model labels that
+ *   exist so far) ──> per-signal accuracy without manual labels + P(generated) per pair
+ *   (results in params.reuse_check_dir/lca; rerun as more model labels arrive)
+ *
  * Run:     nextflow run main.nf
  *          nextflow run main.nf --mode reuse_check
  * Test:    nextflow run main.nf --limit 1
@@ -332,6 +337,125 @@ workflow REUSE_CHECK {
     }
 }
 
+process PMC_TO_PMID_SRA {
+    storeDir "${params.outdir}/reuse_check"
+
+    input:
+    path matrix
+
+    output:
+    path 'pmc_pmid_sra.csv'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/pmc_to_pmid.py \\
+        --matrix ${matrix} --repository SRA --out pmc_pmid_sra.csv
+    """
+}
+
+process PUBMED_AUTHORS {
+    storeDir "${params.outdir}/reuse_check"
+
+    input:
+    path pmids
+
+    output:
+    path 'pubmed_authors.csv.gz'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/pubmed_authors.py --pmids ${pmids}
+    """
+}
+
+process GEO_CONTRIBUTORS {
+    // ~120k series at ~3 per second; answers are cached, so a retry goes on where it stopped
+    storeDir "${params.outdir}/reuse_check"
+
+    input:
+    path pairs
+
+    output:
+    path 'geo_contributors.csv.gz'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/geo_contributors.py \\
+        --pairs ${pairs} --cache ${params.outdir}/reuse_check/geo_contributors_cache.jsonl
+    """
+}
+
+process SRA_LINKS {
+    storeDir "${params.outdir}/reuse_check"
+
+    input:
+    path runs
+    path pairs
+
+    output:
+    path 'sra_study_pubmed.csv'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/sra_links.py --runs ${runs} --pairs ${pairs}
+    """
+}
+
+process PAIR_SIGNALS {
+    publishDir "${params.reuse_check_dir}/lca", mode: 'copy'
+
+    input:
+    path pairs
+    path geo_pairs
+    path pmids
+    path authors
+    path geo_names
+    path sra_links
+    path refine
+
+    output:
+    path 'pair_signals.csv.gz'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/pair_signals.py --pairs ${pairs} --geo-pairs ${geo_pairs} \\
+        --pmc-pmid ${pmids} --authors ${authors} --geo-names ${geo_names} --sra-links ${sra_links} --refine ${refine}
+    """
+}
+
+process LCA {
+    // reads the model labels that exist when it runs, so it is never taken from the cache
+    cache false
+    publishDir "${params.reuse_check_dir}/lca", mode: 'copy'
+
+    input:
+    path signals
+
+    output:
+    path 'lca_pairs.csv.gz'
+    path 'lca_raters.csv'
+    path 'lca_summary.md'
+
+    script:
+    """
+    ${params.python} ${projectDir}/scripts/reuse_check/lca.py --signals ${signals} \\
+        --labels-dir ${params.reuse_check_dir}/all/labels --boot ${params.lca_boot} --seed ${params.seed}
+    """
+}
+
+workflow REUSE_LCA {
+    matrix    = file("${params.outdir}/metadata_matrix_filtered.csv", checkIfExists: true)
+    pairs     = file("${params.reuse_check_dir}/all/pairs.csv", checkIfExists: true)   // from --mode reuse_check --text_check_scope all
+    geo_pairs = file("${params.outdir}/reuse_check/geo_link_pairs.csv.gz", checkIfExists: true)
+    runs      = file("${params.outdir}/sra_complete_runs.csv", checkIfExists: true)
+    refine    = file("${params.outdir}/pubmed_mappings.tsv", checkIfExists: true)
+
+    pmids   = PMC_TO_PMID(matrix).mix(PMC_TO_PMID_SRA(matrix)).collect()
+    authors = PUBMED_AUTHORS(pmids)
+    signals = PAIR_SIGNALS(pairs, geo_pairs, pmids, authors, GEO_CONTRIBUTORS(pairs), SRA_LINKS(runs, pairs), refine)
+    LCA(signals)
+}
+
 workflow COLLECT {
     // 1. publications -> accessions + dates
     names = LIST_ARCHIVES().splitText { it.trim() }.filter { it }
@@ -375,7 +499,9 @@ workflow {
         ANALYZE(Channel.value('existing data'))
     } else if (params.mode == 'reuse_check') {
         REUSE_CHECK()
+    } else if (params.mode == 'reuse_lca') {
+        REUSE_LCA()
     } else {
-        error "Unknown --mode '${params.mode}' (use collect, analyze or reuse_check)"
+        error "Unknown --mode '${params.mode}' (use collect, analyze, reuse_check or reuse_lca)"
     }
 }
