@@ -5,6 +5,7 @@ Input: --runs sra_complete_runs.csv, --pairs (SRA rows; converted_accession = SR
 Output: sra_study_pubmed.csv (study, run_pmids, bioproject_pmids), PMIDs joined by ";".
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -16,13 +17,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 URL = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi'
-BATCH = 200
+BATCH = 50   # elink computes one linkset per id; 200 per request made NCBI drop the connection
 KEY = os.environ.get('NCBI_API_KEY', '')
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--runs', required=True)
 ap.add_argument('--pairs', required=True)
 ap.add_argument('--out', default='sra_study_pubmed.csv')
+ap.add_argument('--cache', required=True, help='JSON lines of elink answers, read first (resumable)')
 args = ap.parse_args()
 
 p = pd.read_csv(args.pairs, usecols=['repository', 'converted_accession'], dtype=str)
@@ -41,15 +43,26 @@ print(f'studies: {len(studies)}, with Study_Pubmed_id: {len(run_pm)}, BioProject
 s = requests.Session()
 s.mount('https://', HTTPAdapter(max_retries=Retry(total=8, backoff_factor=2, allowed_methods=None,
                                                   status_forcelist=[429, 500, 502, 503, 504])))
-bp_pm, failed = defaultdict(set), 0
-for i in range(0, len(uids), BATCH):
-    chunk = uids[i:i + BATCH]
+bp_pm, failed, cached = defaultdict(set), 0, set()
+if os.path.exists(args.cache):
+    for line in open(args.cache):
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        cached.add(d['uid'])
+        bp_pm[d['uid']].update(d['pmids'])
+todo_uids = [u for u in uids if u not in cached]
+print(f'BioProject UIDs cached: {len(cached)}, to link: {len(todo_uids)}', file=sys.stderr)
+fc = open(args.cache, 'a')
+for i in range(0, len(todo_uids), BATCH):
+    chunk = todo_uids[i:i + BATCH]
     data = [('dbfrom', 'bioproject'), ('db', 'pubmed'), ('retmode', 'json'), ('tool', 'reusability'),
             ('email', 'drabcinski@gmail.com')] + [('id', u) for u in chunk]   # one linkset per id
     if KEY:
         data.append(('api_key', KEY))
     try:
-        r = s.post(URL, data=data, timeout=120)
+        r = s.post(URL, data=data, timeout=180)
         r.raise_for_status()
         d = r.json()
         if 'linksets' not in d:
@@ -58,11 +71,17 @@ for i in range(0, len(uids), BATCH):
         print(f'batch {i // BATCH} failed: {e}', file=sys.stderr)
         failed += 1
         continue
+    got = {}
     for ls in d['linksets']:
-        links = [x for db in ls.get('linksetdbs', []) if db.get('linkname') == 'bioproject_pubmed' for x in db.get('links', [])]
+        links = [str(x) for db in ls.get('linksetdbs', []) if db.get('linkname') == 'bioproject_pubmed' for x in db.get('links', [])]
         for u in ls.get('ids', []):
-            bp_pm[str(u)].update(map(str, links))
+            got.setdefault(str(u), set()).update(links)
+    for u in chunk:   # ids without links are cached too
+        bp_pm[u].update(got.get(u, ()))
+        fc.write(json.dumps({'uid': u, 'pmids': sorted(got.get(u, ()))}) + '\n')
+    fc.flush()
     time.sleep(0.12 if KEY else 0.4)
+fc.close()
 
 rows = [(st, ';'.join(sorted(run_pm.get(st, ()))), ';'.join(sorted({x for u in proj.get(st, ()) for x in bp_pm.get(u, ())})))
         for st in sorted(studies)]

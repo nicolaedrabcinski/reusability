@@ -397,7 +397,8 @@ process SRA_LINKS {
 
     script:
     """
-    ${params.python} ${projectDir}/scripts/reuse_check/sra_links.py --runs ${runs} --pairs ${pairs}
+    ${params.python} ${projectDir}/scripts/reuse_check/sra_links.py --runs ${runs} --pairs ${pairs} \\
+        --cache ${params.outdir}/reuse_check/bioproject_pubmed_cache.jsonl
     """
 }
 

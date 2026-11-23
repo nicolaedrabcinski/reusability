@@ -59,8 +59,9 @@ with open(args.cache, 'a') as fc:
                     names.append(n)
         fc.write(json.dumps({'gse': g, 'names': names}) + '\n')
         done[g] = names
-        if i % 5000 == 0:
+        if i % 200 == 0:
             fc.flush()
+        if i % 5000 == 0:
             print(f'{i}/{len(todo)}', file=sys.stderr)
         time.sleep(PAUSE)
 
