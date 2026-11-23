@@ -335,7 +335,8 @@ workflow REUSE_CHECK {
 
     if (!params.skip_text_check) {
         SELECT_PAIRS(GEO_LINK_EVAL.out[0], matrix)
-        chunks   = SELECT_PAIRS.out.chunks.flatten()
+        // chunk_0001 first: most informative pairs; FETCH_CONTEXT and LLM_CLASSIFY take them in this order
+        chunks   = SELECT_PAIRS.out.chunks.flatten().toSortedList { a, b -> a.name <=> b.name }.flatMap()
         contexts = FETCH_CONTEXT(chunks)
         labels   = LLM_CLASSIFY(contexts, file("${projectDir}/scripts/reuse_check/llm_classify.py"))
         MAKE_REVIEW(SELECT_PAIRS.out.pairs, labels.collect())
