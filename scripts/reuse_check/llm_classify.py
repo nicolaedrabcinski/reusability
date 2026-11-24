@@ -65,11 +65,40 @@ llm = LLM(model=args.model, revision=args.revision, max_model_len=args.max_model
 tok = llm.get_tokenizer()
 
 
-def prompt(it):
-    user = (f"EXCERPTS (section path in brackets):\n<<<\n{it['context']}\n>>>\n\n"
-            f"Accession: {it['accession']}\nAnswer with the JSON object only, like {EXAMPLE}")
+MAX_ANSWER = 500                                   # tokens, the larger of the two passes
+PROMPT_BUDGET = args.max_model_len - MAX_ANSWER - 16
+
+
+def build(context, accession):
+    user = (f"EXCERPTS (section path in brackets):\n<<<\n{context}\n>>>\n\n"
+            f"Accession: {accession}\nAnswer with the JSON object only, like {EXAMPLE}")
     return tok.apply_chat_template([{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': user}],
                                    tokenize=False, add_generation_prompt=True, enable_thinking=False)
+
+
+def fit_context(it):
+    """Cut the excerpt from its end (the first paragraphs are the ones with the accessions) until the
+    whole prompt fits the model's context with room for the answer. Characters are a poor proxy:
+    lists of accessions and numbers take more tokens per character."""
+    ctx = it['context']
+    over = len(tok(build(ctx, it['accession']))['input_ids']) - PROMPT_BUDGET
+    if over <= 0:
+        return False
+    ids = tok(ctx)['input_ids']
+    while over > 0:
+        ids = ids[:max(0, len(ids) - over - 32)]
+        ctx = tok.decode(ids)
+        over = len(tok(build(ctx, it['accession']))['input_ids']) - PROMPT_BUDGET
+    it['context'] = ctx
+    return True
+
+
+for it in todo:
+    it['context_truncated'] = fit_context(it)
+
+
+def prompt(it):
+    return build(it['context'], it['accession'])
 
 
 def validate(text):
@@ -120,7 +149,7 @@ for it, (lab, err, raw) in zip(todo, answers):
     else:
         parts = [x for x in re.split(r'\.\.\.|…', lab['evidence_quote']) if x.strip()]   # ellipses allowed
         ctx = norm(it['context'])
-        lab['quote_found'] = bool(parts) and all(norm(x) in ctx for x in parts)
+        lab['quote_found'] = bool(parts) and all(norm(x) in ctx for x in parts)   # against the excerpt shown
     labels[(it['pmc_ID'], it['accession'])] = lab
 
 with open(args.out, 'w') as fo:
@@ -128,7 +157,9 @@ with open(args.out, 'w') as fo:
         lab = labels.get((it['pmc_ID'], it['accession']), {'role': 'unclear', 'no_text': True})
         fo.write(json.dumps({'pmc_ID': it['pmc_ID'], 'accession': it['accession'], 'model': args.model,
                              **lab, 'text_source': it['text_source'], 'n_mentions': it['n_mentions'],
+                             'context_truncated': it.get('context_truncated', False),
                              'raw_terms': it['raw_terms'], 'processed_terms': it['processed_terms']},
                             ensure_ascii=False) + '\n')
 print(f'pairs: {len(items)}, labelled by the model: {len(todo)} '
-      f'(retried {len(bad)}, still invalid {n_bad}), without text: {len(items) - len(todo)}')
+      f'(retried {len(bad)}, still invalid {n_bad}, excerpt cut to fit the context: '
+      f'{sum(it.get("context_truncated", False) for it in todo)}), without text: {len(items) - len(todo)}')
